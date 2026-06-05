@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+/* Minimalist Dark Tech Theme Global Additions */
+@layer base {
+  body {
+    background-color: #020617; /* Slate-950 */
+    color: #e2e8f0; /* Slate-200 */
+    font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji";
+    overflow-x: hidden;
+  }
+}
+
+/* Custom Micro-Animations */
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes terminal-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@utility animate-spin-slow {
+  animation: spin-slow 16s linear infinite;
+}
+
+@utility animate-blink {
+  animation: terminal-blink 1s step-end infinite;
+}
+
+/* Scrollbar Customization */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090d16;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}

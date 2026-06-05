@@ -1,0 +1,43 @@
+{
+  "name": "Mappu Engine Project",
+  "version": "1.5.0",
+  "analysis": {
+    "exclude": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/.git/**",
+      "**/.mappu/**",
+      "**/coverage/**"
+    ],
+    "fileExtensions": [
+      ".ts",
+      ".tsx",
+      ".js",
+      ".jsx",
+      ".py",
+      ".rs",
+      ".go",
+      ".java",
+      ".cpp",
+      ".c"
+    ],
+    "maxChunkSize": 400,
+    "detectCommunities": true,
+    "staticScanners": {
+      "reachability": true,
+      "sast": true,
+      "churn": true,
+      "clones": true
+    }
+  },
+  "aiEngine": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash",
+    "temperature": 0.1,
+    "maxTokens": 2048
+  },
+  "communityRules": {
+    "minMutualImports": 1,
+    "clusterPrefix": "Module_Cluster"
+  }
+}

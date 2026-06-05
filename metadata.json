@@ -1,0 +1,6 @@
+{
+  "name": "Mappu Engine",
+  "description": "An interactive, full-stack AI-powered intent code search, call tracer, and diagnostics CLI and Web application.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
