@@ -15,27 +15,48 @@ import * as goParser from "./languages/go";
 export class ParserFactory {
   private static wrapper = new UniversalTreeSitterWrapper();
 
-  public static getParserByExtension(ext: string): { parse: (filePath: string, content: string) => ParserResult } {
+  public static getParserByExtension(ext: string): { parse: (filePath: string, content: string) => ParserResult | null } | null {
     const rawExt = ext.replace(/^\./, "").toLowerCase();
 
+    const tsExtensions = ["ts", "tsx"];
+    const jsExtensions = ["js", "jsx"];
+    const pyExtensions = ["py"];
+    const rsExtensions = ["rs"];
+    const goExtensions = ["go"];
+
+    const allSupported = [...tsExtensions, ...jsExtensions, ...pyExtensions, ...rsExtensions, ...goExtensions];
+    if (!allSupported.includes(rawExt)) {
+      return null;
+    }
+
     return {
-      parse: (filePath: string, content: string): ParserResult => {
-        if (["ts", "tsx"].includes(rawExt)) {
-          return tsParser.parse(filePath, content);
-        }
+      parse: (filePath: string, content: string): ParserResult | null => {
+        try {
+          if (tsExtensions.includes(rawExt)) {
+            return tsParser.parse(filePath, content);
+          }
+          if (jsExtensions.includes(rawExt)) {
+            return jsParser.parse(filePath, content);
+          }
 
-        let language = "unknown";
-        if (["js", "jsx"].includes(rawExt)) {
-          language = jsParser.languageId;
-        } else if (rawExt === "py") {
-          language = pyParser.languageId;
-        } else if (rawExt === "rs") {
-          language = rsParser.languageId;
-        } else if (rawExt === "go") {
-          language = goParser.languageId;
-        }
+          let language = "unknown";
+          if (pyExtensions.includes(rawExt)) {
+            language = pyParser.languageId;
+          } else if (rsExtensions.includes(rawExt)) {
+            language = rsParser.languageId;
+          } else if (goExtensions.includes(rawExt)) {
+            language = goParser.languageId;
+          }
 
-        return this.wrapper.parseFile(filePath, content, language);
+          if (language === "unknown") {
+            return null;
+          }
+
+          return this.wrapper.parseFile(filePath, content, language);
+        } catch (error) {
+          console.error(`[ParserFactory] Exception while parsing ${filePath}:`, error);
+          return null;
+        }
       }
     };
   }

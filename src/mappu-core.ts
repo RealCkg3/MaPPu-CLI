@@ -56,78 +56,28 @@ export interface IndexRegistry {
   }[];
 }
 
+import { scanFiles } from "./parser/scanner";
+
 // Scans recursively with deep ignore patterns
 export async function scanCodebase(projectRoot: string): Promise<{ filePath: string; content: string }[]> {
   const fileList: { filePath: string; content: string }[] = [];
-  const ignoredDirectories = [
-    "node_modules",
-    "dist",
-    "build",
-    ".git",
-    ".mappu",
-    "package-lock.json",
-    "yarn.lock",
-    ".env",
-  ];
-  const allowedExtensions = [
-    ".ts",
-    ".tsx",
-    ".js",
-    ".jsx",
-    ".json",
-    ".py",
-    ".rs",
-    ".go",
-    ".java",
-    ".cs",
-    ".cpp",
-    ".h",
-    ".html",
-    ".css",
-    ".md",
-    "server.ts",
-  ];
-
-  async function traverse(currentDir: string) {
-    let entries: string[] = [];
-    try {
-      entries = await fs.promises.readdir(currentDir);
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry);
-      let stat: fs.Stats;
+  try {
+    const scanned = await scanFiles(projectRoot);
+    for (const f of scanned) {
+      const fullPath = path.resolve(projectRoot, f.path);
       try {
-        stat = await fs.promises.stat(fullPath);
+        const stat = await fs.promises.stat(fullPath);
+        if (stat.size < 200000) {
+          const content = await fs.promises.readFile(fullPath, "utf-8");
+          fileList.push({ filePath: f.path, content });
+        }
       } catch {
-        continue;
-      }
-
-      if (stat.isDirectory()) {
-        if (!ignoredDirectories.includes(entry)) {
-          await traverse(fullPath);
-        }
-      } else if (stat.isFile()) {
-        const ext = path.extname(entry).toLowerCase();
-        // Check if file fits size guidelines (skip files over 200KB for text search safety)
-        if (allowedExtensions.includes(ext) || entry === "package.json") {
-          if (stat.size < 200000) {
-            try {
-              const content = await fs.promises.readFile(fullPath, "utf-8");
-              const relativePath = path.relative(projectRoot, fullPath);
-              fileList.push({ filePath: relativePath, content });
-            } catch {
-              // skip unreadable files
-            }
-          }
-        }
+        // skip unreadable files
       }
     }
+  } catch {
+    // Ignore error
   }
-
-  await traverse(projectRoot);
   return fileList;
 }
 
