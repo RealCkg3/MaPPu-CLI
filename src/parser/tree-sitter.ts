@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ParsedFile } from "./types";
+import { ParserResult } from "./types";
 import { SymbolKind } from "../types/symbol";
 
 export class UniversalTreeSitterWrapper {
@@ -11,7 +11,7 @@ export class UniversalTreeSitterWrapper {
    * Universal AST pattern matching wrapper with regex fallbacks and structural parsing logic.
    * Ensures 100% environment-agnostic compilation.
    */
-  public parseFile(filePath: string, content: string, language: string): ParsedFile {
+  public parseFile(filePath: string, content: string, language: string): ParserResult {
     const symbols: any[] = [];
     const imports: any[] = [];
     const calls: any[] = [];

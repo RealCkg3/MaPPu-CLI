@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ParsedFile } from "./types";
+import { ParserResult } from "./types";
 import { UniversalTreeSitterWrapper } from "./tree-sitter";
 
 import * as tsParser from "./languages/typescript";
@@ -15,15 +15,17 @@ import * as goParser from "./languages/go";
 export class ParserFactory {
   private static wrapper = new UniversalTreeSitterWrapper();
 
-  public static getParserByExtension(ext: string): { parse: (filePath: string, content: string) => ParsedFile } {
+  public static getParserByExtension(ext: string): { parse: (filePath: string, content: string) => ParserResult } {
     const rawExt = ext.replace(/^\./, "").toLowerCase();
 
     return {
-      parse: (filePath: string, content: string): ParsedFile => {
-        let language = "unknown";
+      parse: (filePath: string, content: string): ParserResult => {
         if (["ts", "tsx"].includes(rawExt)) {
-          language = tsParser.languageId;
-        } else if (["js", "jsx"].includes(rawExt)) {
+          return tsParser.parse(filePath, content);
+        }
+
+        let language = "unknown";
+        if (["js", "jsx"].includes(rawExt)) {
           language = jsParser.languageId;
         } else if (rawExt === "py") {
           language = pyParser.languageId;
