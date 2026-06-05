@@ -13,7 +13,8 @@ export const SQLiteSchema = {
       filePath TEXT PRIMARY KEY,
       description TEXT NOT NULL,
       languages TEXT NOT NULL,
-      scannedAt TEXT NOT NULL
+      scannedAt TEXT NOT NULL,
+      hash TEXT NOT NULL DEFAULT ''
     )
   `,
   symbolsTable: `
@@ -32,6 +33,8 @@ export const SQLiteSchema = {
     CREATE TABLE IF NOT EXISTS chunks (
       id TEXT PRIMARY KEY,
       filePath TEXT NOT NULL,
+      startLine INTEGER NOT NULL DEFAULT 1,
+      endLine INTEGER NOT NULL DEFAULT 1,
       summary TEXT NOT NULL,
       intentTags TEXT NOT NULL,
       content TEXT NOT NULL,

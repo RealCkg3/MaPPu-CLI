@@ -6,6 +6,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import * as fs from "fs";
 import * as path from "path";
+import Database from "better-sqlite3";
 
 // Initialize Gemini Client safely
 function getGeminiClient(): GoogleGenAI {
@@ -43,6 +44,7 @@ export interface IndexRegistry {
     exports: string[];
     imports: string[];
     languages: string;
+    hash?: string;
   }[];
   chunks: {
     id: string;
@@ -375,24 +377,10 @@ export async function indexCodebase(projectRoot: string, onProgress?: (msg: stri
     })
   };
 
-  // Ensure index directory exists and save local backup
-  const dotMappu = path.join(projectRoot, ".mappu");
-  if (!fs.existsSync(dotMappu)) {
-    fs.mkdirSync(dotMappu, { recursive: true });
-  }
-  
-  await fs.promises.writeFile(
-    path.join(dotMappu, "index.json"),
-    JSON.stringify(registry, null, 2),
-    "utf-8"
-  );
-  
-  // Save raw code strings separately so standard CLI doesn't need to read all disk on searches
-  await fs.promises.writeFile(
-    path.join(dotMappu, "raw-chunks.json"),
-    JSON.stringify(rawChunks, null, 2),
-    "utf-8"
-  );
+  // Save index into SQLite database
+  const { StorageManager } = await import("./index/storage");
+  const storage = new StorageManager();
+  await storage.save(projectRoot, registry, rawChunks);
 
   if (onProgress) onProgress("Pristine Mappu index compiled. Codebase successfully semantically mapped!");
   return registry;
@@ -400,17 +388,85 @@ export async function indexCodebase(projectRoot: string, onProgress?: (msg: stri
 
 // Retrieve cached index securely from project root
 export function getStoredIndex(projectRoot: string): { registry: IndexRegistry; chunks: FileChunk[] } | null {
-  const indexPath = path.join(projectRoot, ".mappu", "index.json");
-  const rawPath = path.join(projectRoot, ".mappu", "raw-chunks.json");
+  const dbPath = path.join(projectRoot, ".mappu", "mappu.db");
 
-  if (!fs.existsSync(indexPath) || !fs.existsSync(rawPath)) {
+  if (!fs.existsSync(dbPath)) {
     return null;
   }
 
   try {
-    const registry = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
-    const chunks = JSON.parse(fs.readFileSync(rawPath, "utf-8"));
-    return { registry, chunks };
+    const db = new Database(dbPath);
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+
+    const files = db.prepare(`SELECT * FROM files`).all() as any[];
+    if (files.length === 0) {
+      db.close();
+      return null;
+    }
+
+    const dbChunks = db.prepare(`SELECT * FROM chunks`).all() as any[];
+    const dbSymbols = db.prepare(`SELECT * FROM symbols`).all() as any[];
+    const dbEdges = db.prepare(`SELECT * FROM edges`).all() as any[];
+
+    db.close();
+
+    // Reconstruct files format
+    const registryFiles = files.map(f => {
+      const fileImports = dbEdges
+        .filter(e => e.source === f.filePath && e.type === "imports")
+        .map(e => e.target);
+
+      const fileExports = dbSymbols
+        .filter(s => s.filePath === f.filePath && s.kind === "export")
+        .map(s => s.name);
+
+      return {
+        filePath: f.filePath,
+        description: f.description,
+        exports: fileExports,
+        imports: fileImports,
+        languages: f.languages,
+      };
+    });
+
+    // Reconstruct chunks format
+    const registryChunks = dbChunks.map(c => {
+      let parsedTags: string[] = [];
+      try {
+        parsedTags = JSON.parse(c.intentTags);
+      } catch {
+        parsedTags = [];
+      }
+
+      return {
+        id: c.id,
+        filePath: c.filePath,
+        startLine: c.startLine || 1,
+        endLine: c.endLine || 1,
+        summary: c.summary,
+        intentTags: parsedTags,
+      };
+    });
+
+    const registry: IndexRegistry = {
+      scannedAt: files[0]?.scannedAt || new Date().toISOString(),
+      projectRoot,
+      totalFiles: files.length,
+      files: registryFiles,
+      chunks: registryChunks,
+    };
+
+    const rawChunks: FileChunk[] = dbChunks.map(c => ({
+      id: c.id,
+      filePath: c.filePath,
+      startLine: c.startLine || 1,
+      endLine: c.endLine || 1,
+      content: c.content,
+      length: c.content.length,
+    }));
+
+    return { registry, chunks: rawChunks };
   } catch {
     return null;
   }

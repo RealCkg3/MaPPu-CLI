@@ -6,10 +6,10 @@
   <br />
 
   <p>
-    <a href="https://github.com/RealCkg/mappu/stargazers">
-      <img src="https://img.shields.io/github/stars/RealCkg/mappu?style=flat-square&color=gold" alt="Stars" />
+    <a href="https://github.com/RealCkg3/mappu/stargazers">
+      <img src="https://img.shields.io/github/stars/RealCkg3/mappu?style=flat-square&color=gold" alt="Stars" />
     </a>
-    <a href="https://github.com/RealCkg/mappu/blob/main/LICENSE">
+    <a href="https://github.com/RealCkg3/mappu/blob/main/LICENSE">
       <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" />
     </a>
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-green?style=flat-square&logo=node.js" alt="Node" />
@@ -359,7 +359,7 @@ If you want to generate a highly polished, stylized version of the "MAPPU" CLI p
 ## 🤝 Contributing
 
 ```bash
-git clone https://github.com/RealCkg/mappu
+git clone https://github.com/RealCkg3/mappu
 cd mappu
 npm install
 npm run dev
@@ -376,5 +376,5 @@ MIT — see [LICENSE](./LICENSE).
 ---
 
 <div align="center">
-  <sub>Built by <a href="https://github.com/RealCkg">RealCkg</a> · Star ⭐ if Mappu helps you</sub>
+  <sub>Built by <a href="https://github.com/RealCkg3">RealCkg3</a> · Star ⭐ if Mappu helps you</sub>
 </div>
