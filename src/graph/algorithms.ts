@@ -3,6 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { DirectedGraph } from "graphology";
+import { stronglyConnectedComponents } from "graphology-components";
+
 export class GraphAlgorithms {
   /**
    * Depth-First-Search (DFS) cycle detector for circular import dependencies.
@@ -69,5 +72,59 @@ export class GraphAlgorithms {
     }
 
     return null;
+  }
+
+  /**
+   * Finds strongly connected components (SCCs) in a directed graph using Tarjan's algorithm.
+   */
+  public findStronglyConnectedComponents(graph: DirectedGraph): string[][] {
+    if (!graph || typeof graph.forEachNode !== "function") {
+      return [];
+    }
+    try {
+      return stronglyConnectedComponents(graph);
+    } catch (err) {
+      console.error("[GraphAlgorithms] Failed to compute strongly connected components:", err);
+      return [];
+    }
+  }
+
+  /**
+   * Returns all reachable node IDs starting from the given set of starting nodes.
+   * Highly useful for dead code/tree-shaking analysis.
+   */
+  public getReachableFrom(graph: DirectedGraph, startNodeIds: string[]): string[] {
+    const visited = new Set<string>();
+    const queue: string[] = [];
+
+    for (const startId of startNodeIds) {
+      if (graph.hasNode(startId)) {
+        queue.push(startId);
+        visited.add(startId);
+      }
+    }
+
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      let neighbors: string[] = [];
+      try {
+        neighbors = graph.outNeighbors(node);
+      } catch {
+        try {
+          neighbors = graph.neighbors(node);
+        } catch {
+          // No neighbors found
+        }
+      }
+
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    return Array.from(visited);
   }
 }

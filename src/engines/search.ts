@@ -5,8 +5,29 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { getStoredIndex, SearchResult } from "../mappu-core";
+import BM25 from "okapibm25";
+import * as path from "path";
+import * as fs from "fs";
+import { StorageManager } from "../index/storage";
+import { Tokenizer } from "../index/tokenizer";
+import { ts, js, tsx, jsx, html, css } from "@ast-grep/napi";
+
+function getParserForFile(filePath: string) {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "ts": return ts;
+    case "tsx": return tsx;
+    case "js": return js;
+    case "jsx": return jsx;
+    case "html": return html;
+    case "css": return css;
+    default: return null;
+  }
+}
 
 export class SearchEngine {
+  private tokenizer = new Tokenizer();
+
   /**
    * Performs BM25 relevance scoring and AST regex pattern mapping over local index chunks.
    */
@@ -16,17 +37,66 @@ export class SearchEngine {
       throw new Error("No Mappu index found. Run 'mappu init' first.");
     }
 
-    const { registry, chunks: rawChunks } = indexWrap;
+    const storage = new StorageManager();
+    let db: any;
+    let registry = indexWrap.registry;
+    let rawChunks = indexWrap.chunks;
+
+    try {
+      db = storage.open(projectRoot);
+      const loaded = await storage.load(projectRoot);
+      if (loaded) {
+        registry = loaded.registry;
+        rawChunks = loaded.chunks;
+      }
+    } catch {
+      // Ignore database loading error and fall back to cache
+    }
 
     // Parse qualifiers from query (e.g. symbol:function, path:src/ etc.)
     const { cleanQuery, qualifiers } = this.parseQualifiers(query);
 
-    let matchedChunks = rawChunks;
+    let matchedChunks: any[] = [];
+    const keywords = this.tokenize(cleanQuery);
+
+    if (db && keywords.length > 0) {
+      try {
+        const placeholders = keywords.map(() => "?").join(",");
+        const rows = db.prepare(`
+          SELECT DISTINCT filePath FROM bm25_terms WHERE term IN (${placeholders})
+        `).all(...keywords) as { filePath: string }[];
+
+        if (rows.length > 0) {
+          const filePaths = rows.map(r => r.filePath);
+          const chunkPlaceholders = filePaths.map(() => "?").join(",");
+          matchedChunks = db.prepare(`
+            SELECT * FROM chunks WHERE filePath IN (${chunkPlaceholders})
+          `).all(...filePaths) as any[];
+        }
+      } catch (err) {
+        matchedChunks = rawChunks;
+      }
+    } else {
+      if (db) {
+        try {
+          matchedChunks = db.prepare(`SELECT * FROM chunks`).all() as any[];
+        } catch {
+          matchedChunks = rawChunks;
+        }
+      } else {
+        matchedChunks = rawChunks;
+      }
+    }
+
+    // If still empty because of keywords having zero hits in index, fallback to complete raw list
+    if (matchedChunks.length === 0) {
+      matchedChunks = rawChunks;
+    }
 
     // Filter by pattern if specified or --pattern is passed
     const pattern = options.pattern || qualifiers.pattern;
     if (pattern) {
-      matchedChunks = this.runPatternMatch(rawChunks, pattern);
+      matchedChunks = this.runPatternMatch(projectRoot, matchedChunks, pattern);
     }
 
     // Filter by qualifiers
@@ -35,19 +105,24 @@ export class SearchEngine {
     // Compute BM25 scores
     let results = this.rankBM25(matchedChunks, cleanQuery);
 
-    // If AI is configured and requested via options, enrich the top 3 results using Gemini
+    // Map to symbols for professional symbol-level view
+    let finalResults = this.mapToSymbols(results, db, projectRoot);
+
+    // Sort by score descending and limit before AI enrichment
+    finalResults = finalResults.sort((a, b) => b.score - a.score);
+
+    // If AI is configured and requested via options, enrich the top results using Gemini
     const apiKey = process.env.GEMINI_API_KEY;
-    if (options.ai && apiKey && results.length > 0) {
+    if (options.ai && apiKey && finalResults.length > 0) {
       try {
-        results = await this.enrichWithAI(results.slice(0, 5), cleanQuery, apiKey);
+        finalResults = await this.enrichWithAI(finalResults.slice(0, 5), cleanQuery, apiKey);
       } catch {
         // Fall back gracefully if AI fails or rate limits
       }
     }
 
-    // Sort by score descending and apply limit
     const limit = options.limit || 10;
-    return results.sort((a, b) => b.score - a.score).slice(0, limit);
+    return finalResults.sort((a, b) => b.score - a.score).slice(0, limit);
   }
 
   /**
@@ -76,27 +151,73 @@ export class SearchEngine {
   }
 
   /**
-   * Structural matching fallback using robust string/regex token mapping
+   * AST-based structural search via @ast-grep/napi falling back to regex token matching
    */
-  private runPatternMatch(chunks: any[], pattern: string): any[] {
-    // Escape standard regex characters except variables starting with $
+  private runPatternMatch(projectRoot: string, chunks: any[], pattern: string): any[] {
+    const filePaths = Array.from(new Set(chunks.map(c => c.filePath)));
+    const matchedNodes: any[] = [];
+
+    for (const filePath of filePaths) {
+      try {
+        const parser = getParserForFile(filePath);
+        if (!parser) {
+          const fileChunks = chunks.filter(c => c.filePath === filePath);
+          const regexMatches = this.runRegexPatternMatch(fileChunks, pattern);
+          matchedNodes.push(...regexMatches);
+          continue;
+        }
+
+        const fullPath = path.isAbsolute(filePath) ? filePath : path.join(projectRoot, filePath);
+        if (!fs.existsSync(fullPath)) continue;
+        const fileContent = fs.readFileSync(fullPath, "utf8");
+
+        const root = parser.parse(fileContent);
+        const matches = root.root().findAll(pattern);
+        if (matches && matches.length > 0) {
+          for (const m of matches) {
+            const range = m.range();
+            const startLine = range.start.line + 1;
+            const endLine = range.end.line + 1;
+            matchedNodes.push({
+              id: `ast_${filePath}_${range.start.index}`,
+              filePath,
+              startLine,
+              endLine,
+              summary: `AST Pattern Match: ${pattern}`,
+              intentTags: "[]",
+              content: m.text()
+            });
+          }
+        }
+      } catch (e) {
+        const fileChunks = chunks.filter(c => c.filePath === filePath);
+        const regexMatches = this.runRegexPatternMatch(fileChunks, pattern);
+        matchedNodes.push(...regexMatches);
+      }
+    }
+
+    return matchedNodes;
+  }
+
+  /**
+   * Translates legacy structural qualifiers into robust regexes
+   */
+  private runRegexPatternMatch(chunks: any[], pattern: string): any[] {
     let escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (match) => {
       if (match === "$") return "$";
       return "\\" + match;
     });
 
-    // Translate structural qualifiers like $NAME, $ANY, $CODE, $... into regex groups
     escaped = escaped.replace(/\$[A-Z_]+/g, "([^\\s(),]+)");
     escaped = escaped.replace(/\$\.\.\./g, "(.*?)");
     escaped = escaped.replace(/\$_\s*/g, "([^}]*)");
 
     try {
       const regex = new RegExp(escaped, "s");
-      return chunks.filter(c => regex.test(c.content));
+      return chunks.filter(c => regex.test(c.content || c.content));
     } catch {
-      // Graceful substring fallthrough if regex compile fails
       const cleanPattern = pattern.replace(/\$[A-Z_]+/g, "").replace(/\$\.\.\./g, "").trim();
-      return chunks.filter(c => c.content.includes(cleanPattern));
+      return chunks.filter(c => (c.content || "").includes(cleanPattern));
     }
   }
 
@@ -106,37 +227,31 @@ export class SearchEngine {
   private applyQualifiers(chunks: any[], registry: any, qualifiers: Record<string, string>, options: any): any[] {
     let filtered = chunks;
 
-    // Filter by File path Glob (or substring)
     const fileConstraint = options.file || qualifiers.path || qualifiers.file;
     if (fileConstraint) {
       const matchPath = fileConstraint.toLowerCase();
       filtered = filtered.filter(c => c.filePath.toLowerCase().includes(matchPath));
     }
 
-    // Filter by type constraint
     const typeConstraint = options.type || qualifiers.symbol || qualifiers.type;
     if (typeConstraint) {
       const targetType = typeConstraint.toLowerCase();
-      // Look up symbols matching kind inside registry
       filtered = filtered.filter(c => {
-        const fileInfo = registry.files.find((f: any) => f.filePath === c.filePath);
-        if (!fileInfo) return true;
-        
-        // Match standard function declaration style or keyword hints matching standard type boundaries
+        const fileInfo = registry.files ? registry.files.find((f: any) => f.filePath === c.filePath) : null;
+        const content = c.content || "";
         if (targetType === "fn" || targetType === "function" || targetType === "method") {
-          return c.content.includes("function") || c.content.includes("=>") || c.content.includes("def ") || c.content.includes("async");
+          return content.includes("function") || content.includes("=>") || content.includes("def ") || content.includes("async");
         }
         if (targetType === "class") {
-          return c.content.includes("class ");
+          return content.includes("class ");
         }
         if (targetType === "interface" || targetType === "type") {
-          return c.content.includes("interface ") || c.content.includes("type ");
+          return content.includes("interface ") || content.includes("type ");
         }
         return true;
       });
     }
 
-    // Filter by Language
     const langConstraint = options.lang || qualifiers.language || qualifiers.lang;
     if (langConstraint) {
       const targetLangs = langConstraint.toLowerCase().split(",");
@@ -148,14 +263,12 @@ export class SearchEngine {
       });
     }
 
-    // Export rule filter
     if (options.exported || qualifiers.is === "exported") {
-      filtered = filtered.filter(c => c.content.includes("export "));
+      filtered = filtered.filter(c => (c.content || "").includes("export "));
     }
 
-    // Async rule filter
     if (options.async || qualifiers.is === "async") {
-      filtered = filtered.filter(c => c.content.includes("async "));
+      filtered = filtered.filter(c => (c.content || "").includes("async "));
     }
 
     return filtered;
@@ -170,53 +283,33 @@ export class SearchEngine {
         filePath: c.filePath,
         startLine: c.startLine,
         endLine: c.endLine,
-        snippet: c.content,
+        snippet: c.content || "",
         score: 1.0,
         matchRationale: "Unscored default structural coverage match."
       }));
     }
 
-    // Step 1: Token Pipeline
     const queryTokens = this.tokenize(query);
-    const documentTokens = chunks.map(c => this.tokenize(c.content));
+    if (queryTokens.length === 0) {
+      return chunks.map(c => ({
+        filePath: c.filePath,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        snippet: c.content || "",
+        score: 1.0,
+        matchRationale: "Unscored default structural coverage match."
+      }));
+    }
 
-    // Step 2: Calculate average document length
-    const totalLength = documentTokens.reduce((acc, doc) => acc + doc.length, 0);
-    const avgdl = totalLength / (chunks.length || 1);
-
-    // Step 3: Calculate document frequency (DF) for each query token
-    const df: Record<string, number> = {};
-    queryTokens.forEach(token => {
-      df[token] = 0;
-      documentTokens.forEach(doc => {
-        if (doc.includes(token)) {
-          df[token]++;
-        }
-      });
-    });
-
-    const k1 = 1.2;
-    const b = 0.75;
+    const documents = chunks.map(c => c.content || "");
+    const scores = BM25(documents, queryTokens) as number[];
     const results: SearchResult[] = [];
 
     chunks.forEach((chunk, docIdx) => {
-      const doc = documentTokens[docIdx];
-      const docLen = doc.length;
-      let score = 0;
+      let score = scores[docIdx] || 0;
+      const content = chunk.content || "";
 
-      queryTokens.forEach(token => {
-        const tf = doc.filter(t => t === token).length;
-        if (tf > 0) {
-          // Compute Inverse Document Frequency (IDF) with safe flooring
-          const idf = Math.log(1 + (chunks.length - df[token] + 0.5) / (df[token] + 0.5));
-          // Compute BM25 formula score
-          const termScore = idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLen / avgdl)));
-          score += termScore;
-        }
-      });
-
-      // If text contains query literally, award big score boost
-      if (chunk.content.toLowerCase().includes(query.toLowerCase())) {
+      if (content.toLowerCase().includes(query.toLowerCase())) {
         score += 3.0;
       }
 
@@ -224,40 +317,87 @@ export class SearchEngine {
         filePath: chunk.filePath,
         startLine: chunk.startLine,
         endLine: chunk.endLine,
-        snippet: chunk.content,
+        snippet: content,
         score: Math.min(10.0, Math.max(0.1, score)),
         matchRationale: `BM25 textual similarity index matches semantic terms [${queryTokens.slice(0, 3).join(", ")}].`
       });
     });
 
-    // Remove zero scores and sort
     return results
       .filter(r => r.score > 0.05)
       .sort((a, b) => b.score - a.score);
   }
 
   /**
-   * Splits camelCase, snake_case, tokenized lowercase representations
+   * Translates chunk level search results to symbol level search results.
+   */
+  private mapToSymbols(results: SearchResult[], db: any, projectRoot: string): SearchResult[] {
+    if (!db) return results;
+
+    const mappedResults: SearchResult[] = [];
+
+    for (const res of results) {
+      try {
+        const symbols = db.prepare(`
+          SELECT * FROM symbols 
+          WHERE filePath = ? 
+            AND startLine <= ? 
+            AND endLine >= ?
+        `).all(res.filePath, res.endLine, res.startLine) as any[];
+
+        if (symbols && symbols.length > 0) {
+          let bestSymbol = symbols[0];
+          
+          for (const sym of symbols) {
+            const kind = sym.kind || "";
+            if (kind === "function" || kind === "method" || kind === "class" || kind === "export") {
+              bestSymbol = sym;
+            }
+          }
+
+          const symbolFilePath = bestSymbol.filePath;
+          const startLine = bestSymbol.startLine;
+          const endLine = bestSymbol.endLine;
+
+          let snippet = res.snippet;
+          try {
+            const fullPath = path.isAbsolute(symbolFilePath) ? symbolFilePath : path.join(projectRoot, symbolFilePath);
+            if (fs.existsSync(fullPath)) {
+              const fileContent = fs.readFileSync(fullPath, "utf8");
+              const lines = fileContent.split("\n");
+              const slicedLines = lines.slice(Math.max(0, startLine - 1), endLine);
+              if (slicedLines.length > 0) {
+                snippet = slicedLines.join("\n");
+              }
+            }
+          } catch {
+            // Graceful fallback
+          }
+
+          mappedResults.push({
+            filePath: symbolFilePath,
+            startLine,
+            endLine,
+            snippet,
+            score: res.score,
+            matchRationale: `Symbol match [${bestSymbol.name}] (${bestSymbol.kind}). ${res.matchRationale || ""}`
+          });
+        } else {
+          mappedResults.push(res);
+        }
+      } catch (err) {
+        mappedResults.push(res);
+      }
+    }
+
+    return mappedResults;
+  }
+
+  /**
+   * Tokenize with Tokenizer matching src/index/tokenizer.ts
    */
   private tokenize(text: string): string[] {
-    const rawTerms = text.toLowerCase().split(/[^a-zA-Z0-9_\$]/).filter(Boolean);
-    const tokens: string[] = [];
-
-    rawTerms.forEach(term => {
-      tokens.push(term);
-      // Split camelCase
-      const camelSplits = term.split(/(?=[A-Z])/).map(t => t.toLowerCase());
-      if (camelSplits.length > 1) {
-        tokens.push(...camelSplits);
-      }
-      // Split snake_case / kebab-case
-      const snakeSplits = term.split(/[-_]/);
-      if (snakeSplits.length > 1) {
-        tokens.push(...snakeSplits);
-      }
-    });
-
-    return Array.from(new Set(tokens));
+    return this.tokenizer.tokenize(text);
   }
 
   /**
@@ -273,7 +413,7 @@ export class SearchEngine {
     `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
