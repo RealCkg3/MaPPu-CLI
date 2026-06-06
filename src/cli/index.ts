@@ -462,11 +462,40 @@ ${colors.bold}Available Diagnostic Quality Rules:${colors.reset}
         const scanner = new DeadCodeEngine();
         const results = scanner.analyzeReachability(projectRoot);
 
-        let outText = `\n${colors.bold}Control Flow Reachability Findings:${colors.reset}\n`;
-        results.forEach(r => {
-          const status = r.isReachable ? `${colors.green}[REACHABLE]` : `${colors.red}[DANGLING ]`;
-          outText += `  ${status}${colors.reset} ${colors.teal}${r.filePath.padEnd(45)}${colors.reset} Incoming relationships: ${colors.bold}${r.referencesCount}${colors.reset}\n`;
-        });
+        const deadFiles = (results as any).deadFiles || [];
+        const deadFunctions = (results as any).deadFunctions || [];
+        const deadExports = (results as any).deadExports || [];
+
+        let outText = `\n${colors.bold}${colors.cyan}=== CONTROL FLOW REACHABILITY FINDINGS ===${colors.reset}\n`;
+
+        outText += `\n${colors.bold}${colors.red}Isolated / Dead Files (${deadFiles.length})${colors.reset}\n`;
+        if (deadFiles.length === 0) {
+          outText += `  ${colors.green}✔ No completely dead files detected in workspace.${colors.reset}\n`;
+        } else {
+          deadFiles.forEach((f: any) => {
+            outText += `  ${colors.red}●${colors.reset} ${colors.teal}${f.filePath}${colors.reset} (${f.referencesCount} inbound imports)\n`;
+          });
+        }
+
+        outText += `\n${colors.bold}${colors.yellow}Dead Internal Functions (${deadFunctions.length})${colors.reset}\n`;
+        if (deadFunctions.length === 0) {
+          outText += `  ${colors.green}✔ No unreachable internal functions detected in reachable files.${colors.reset}\n`;
+        } else {
+          deadFunctions.forEach((fn: any) => {
+            outText += `  ${colors.yellow}●${colors.reset} ${colors.yellow}${fn.name}${colors.reset} ${colors.gray}(${fn.kind})${colors.reset} in ${colors.teal}${fn.filePath}:${colors.bold}${fn.startLine}${colors.reset}\n`;
+          });
+        }
+
+        outText += `\n${colors.bold}${colors.indigo}Dead Exports (${deadExports.length})${colors.reset}\n`;
+        if (deadExports.length === 0) {
+          outText += `  ${colors.green}✔ No unused exports detected in reachable files.${colors.reset}\n`;
+        } else {
+          deadExports.forEach((exp: any) => {
+            outText += `  ${colors.indigo}●${colors.reset} ${colors.bold}${exp.name}${colors.reset} ${colors.gray}(${exp.kind})${colors.reset} in ${colors.teal}${exp.filePath}:${colors.bold}${exp.startLine}${colors.reset}\n`;
+          });
+        }
+
+        outText += "\n";
 
         deliverOutput(results, outText, options);
       } catch (err: any) {
@@ -492,11 +521,16 @@ ${colors.bold}Available Diagnostic Quality Rules:${colors.reset}
         if (filtered.length === 0) {
           outText += `  ${colors.green}✔ Excellent! Complete logic modularity. No identical code slabs found.${colors.reset}\n`;
         } else {
-          filtered.forEach((c, idx) => {
-            outText += `  [Group ${idx + 1}] ${colors.yellow}${c.filePathA}${colors.reset} <==> ${colors.yellow}${c.filePathB}${colors.reset}\n`;
-            outText += `     Overlap depth: ${colors.bold}${c.duplicatedLines} identical functional lines${colors.reset}\n`;
+          filtered.forEach((c: any, idx) => {
+            const rangeA = c.startLineA ? `:${c.startLineA}-${c.endLineA}` : "";
+            const rangeB = c.startLineB ? `:${c.startLineB}-${c.endLineB}` : "";
+            outText += `  [Group ${idx + 1}] ${colors.yellow}${c.filePathA}${rangeA}${colors.reset} <==> ${colors.yellow}${c.filePathB}${rangeB}${colors.reset}\n`;
+            if (c.similarityKind) {
+              outText += `     Clone Type: ${colors.bold}${colors.indigo}${c.similarityKind}${colors.reset}\n`;
+            }
+            outText += `     Overlap depth: ${colors.bold}${c.duplicatedLines} lines${colors.reset}\n`;
             if (c.preview) {
-              outText += `     Preview:\n${c.preview.split("\n").map(l => "       " + l).join("\n")}\n`;
+              outText += `     Preview:\n${c.preview.split("\n").map((l: string) => "       " + l).join("\n")}\n`;
             }
           });
         }

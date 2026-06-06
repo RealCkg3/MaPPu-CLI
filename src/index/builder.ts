@@ -7,6 +7,7 @@ import { scanCodebase, chunkFiles } from "../mappu-core";
 import { IndexRegistry } from "../mappu-core";
 import { StorageManager } from "./storage";
 import { ParserFactory } from "../parser";
+import { computeStructHash } from "../parser/hasher";
 import { CommunityDetector } from "../graph/community";
 import { Tokenizer } from "./tokenizer";
 import { BM25SearchEngine } from "./bm25";
@@ -78,6 +79,50 @@ function resolveImportPath(currentFile: string, importStr: string, allFiles: Set
   }
 
   return null;
+}
+
+function estimateParamCount(name: string, kind: string, snippet: string): number {
+  const cleanKind = (kind || "").toLowerCase();
+  if (cleanKind !== "function" && cleanKind !== "method" && cleanKind !== "fn") {
+    return 0;
+  }
+  let paramStr = "";
+  const cleanSnippet = snippet.trim();
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+  const nameRegex = new RegExp(`${escapedName}\\s*\\(([^)]*)\\)`);
+  const matchName = cleanSnippet.match(nameRegex);
+  if (matchName) {
+    paramStr = matchName[1];
+  } else {
+    const matchFunc = cleanSnippet.match(/(?:function\s*)?\(([^)]*)\)/);
+    if (matchFunc) {
+      paramStr = matchFunc[1];
+    } else {
+      const matchBareArrow = cleanSnippet.match(/^([a-zA-Z0-9_$]+)\s*=>/);
+      if (matchBareArrow) {
+        return 1;
+      }
+    }
+  }
+  if (!paramStr) return 0;
+  let depth = 0;
+  let count = 0;
+  let hasChars = false;
+  for (let i = 0; i < paramStr.length; i++) {
+    const char = paramStr[i];
+    if (char === '{' || char === '[') depth++;
+    else if (char === '}' || char === ']') depth--;
+    else if (char === ',' && depth === 0) {
+      count++;
+      hasChars = false;
+    } else if (!/\s/.test(char)) {
+      hasChars = true;
+    }
+  }
+  if (hasChars) {
+    count++;
+  }
+  return count;
 }
 
 export class IndexBuilder {
@@ -385,8 +430,13 @@ export class IndexBuilder {
         `);
 
         const stmtSymbol = db.prepare(`
-          INSERT INTO symbols (id, name, kind, filePath, startLine, endLine, isExported)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO symbols (id, name, kind, filePath, startLine, endLine, start_line, end_line, complexity, param_count, isExported)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const stmtImport = db.prepare(`
+          INSERT INTO imports (id, filePath, target, imported_names)
+          VALUES (?, ?, ?, ?)
         `);
 
         const stmtEdge = db.prepare(`
@@ -395,8 +445,8 @@ export class IndexBuilder {
         `);
 
         const stmtChunk = db.prepare(`
-          INSERT INTO chunks (id, filePath, startLine, endLine, summary, intentTags, content)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO chunks (id, filePath, startLine, endLine, summary, intentTags, content, struct_hash)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const scannedAt = new Date().toISOString();
@@ -420,19 +470,44 @@ export class IndexBuilder {
           // Insert Symbols
           for (const sym of parsed.symbols) {
             const symId = sym.id || `${filePath}#${sym.name}`;
+            const startL = sym.startLine || 1;
+            const endL = sym.endLine || 1;
+
+            // Extract symbol snippet to calculate complexity and argument counts
+            const fileLines = parsed.content.split("\n");
+            const symLines = fileLines.slice(Math.max(0, startL - 1), endL);
+            const symContent = symLines.join("\n");
+
+            const branches = (symContent.match(/\b(if|else\s+if|for|while|catch|case|&&|\|\|)\b/g) || []).length;
+            const complexity = branches;
+            const paramCount = estimateParamCount(sym.name, sym.kind, symContent);
+
             stmtSymbol.run(
               symId,
               sym.name,
               sym.kind || "export",
               filePath,
-              sym.startLine || 1,
-              sym.endLine || 1,
+              startL,
+              endL,
+              startL,
+              endL,
+              complexity,
+              paramCount,
               sym.isExported ? 1 : 0
             );
           }
 
+          // Insert Imports
+          for (const imp of parsed.imports) {
+            const resolvedTarget = resolveImportPath(filePath, imp.source, allWorkspaceFiles) || imp.source;
+            const impId = `db_imp_${filePath}_${resolvedTarget}_${imp.source}`;
+            const importedNamesJson = JSON.stringify(imp.importedSymbols || []);
+            stmtImport.run(impId, filePath, resolvedTarget, importedNamesJson);
+          }
+
           // Insert Chunks
           for (const chunk of parsed.chunks) {
+            const sh = computeStructHash(chunk.content);
             stmtChunk.run(
               chunk.id,
               filePath,
@@ -440,7 +515,8 @@ export class IndexBuilder {
               chunk.endLine,
               chunk.summary,
               JSON.stringify(chunk.intentTags),
-              chunk.content
+              chunk.content,
+              sh
             );
           }
 

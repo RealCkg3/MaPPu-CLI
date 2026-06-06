@@ -11,8 +11,13 @@ export default function CloneTab({ status, viewFileContent }: CloneTabProps) {
   const [data, setData] = useState<{
     filePathA: string;
     filePathB: string;
+    startLineA?: number;
+    endLineA?: number;
+    startLineB?: number;
+    endLineB?: number;
     duplicatedLines: number;
     preview: string;
+    similarityKind?: string;
   }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,12 +115,25 @@ export default function CloneTab({ status, viewFileContent }: CloneTabProps) {
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-900 pb-2">
                     <div className="space-y-1">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-bold text-slate-300 truncate max-w-[180px] sm:max-w-xs">{item.filePathA}</span>
+                        <span className="text-xs font-bold text-slate-300 truncate max-w-[180px] sm:max-w-xs">
+                          {item.filePathA}
+                          {item.startLineA ? ` (L${item.startLineA}-${item.endLineA})` : ""}
+                        </span>
                         <span className="text-[9px] font-mono text-indigo-400 font-bold">&larr;&gt;&larr;</span>
-                        <span className="text-xs font-bold text-slate-300 truncate max-w-[180px] sm:max-w-xs">{item.filePathB}</span>
+                        <span className="text-xs font-bold text-slate-300 truncate max-w-[180px] sm:max-w-xs">
+                          {item.filePathB}
+                          {item.startLineB ? ` (L${item.startLineB}-${item.endLineB})` : ""}
+                        </span>
                       </div>
-                      <p className="text-[10pt] text-slate-500 font-mono">
-                        Redundant slice: <span className="text-indigo-400 font-bold">{item.duplicatedLines} identical lines</span>
+                      <p className="text-[10px] text-slate-400 font-mono flex flex-col gap-1">
+                        <span>
+                          Redundant slice: <span className="text-indigo-400 font-bold">{item.duplicatedLines} lines</span>
+                        </span>
+                        {item.similarityKind && (
+                          <span className="text-slate-500 text-[9px] italic border-l-2 border-indigo-500/50 pl-1.5 mt-0.5">
+                            Clone Type: {item.similarityKind}
+                          </span>
+                        )}
                       </p>
                     </div>
                     <div className="flex gap-1.5">

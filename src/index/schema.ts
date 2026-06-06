@@ -25,7 +25,20 @@ export const SQLiteSchema = {
       filePath TEXT NOT NULL,
       startLine INTEGER NOT NULL,
       endLine INTEGER NOT NULL,
+      start_line INTEGER NOT NULL DEFAULT 1,
+      end_line INTEGER NOT NULL DEFAULT 1,
+      complexity INTEGER NOT NULL DEFAULT 0,
+      param_count INTEGER NOT NULL DEFAULT 0,
       isExported INTEGER DEFAULT 0,
+      FOREIGN KEY (filePath) REFERENCES files(filePath) ON DELETE CASCADE
+    )
+  `,
+  importsTable: `
+    CREATE TABLE IF NOT EXISTS imports (
+      id TEXT PRIMARY KEY,
+      filePath TEXT NOT NULL,
+      target TEXT NOT NULL,
+      imported_names TEXT NOT NULL,
       FOREIGN KEY (filePath) REFERENCES files(filePath) ON DELETE CASCADE
     )
   `,
@@ -38,6 +51,7 @@ export const SQLiteSchema = {
       summary TEXT NOT NULL,
       intentTags TEXT NOT NULL,
       content TEXT NOT NULL,
+      struct_hash TEXT,
       FOREIGN KEY (filePath) REFERENCES files(filePath) ON DELETE CASCADE
     )
   `,
@@ -172,8 +186,13 @@ export const SQLiteIndexes = [
   'CREATE INDEX IF NOT EXISTS idx_symbols_filePath ON symbols(filePath)',
   'CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)',
 
+  // imports indexes
+  'CREATE INDEX IF NOT EXISTS idx_imports_filePath ON imports(filePath)',
+  'CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target)',
+
   // chunks indexes
   'CREATE INDEX IF NOT EXISTS idx_chunks_filePath ON chunks(filePath)',
+  'CREATE INDEX IF NOT EXISTS idx_chunks_struct_hash ON chunks(struct_hash)',
 
   // edges indexes
   'CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source)',
@@ -222,6 +241,18 @@ export function initializeDatabase(dbPath: string): Database.Database {
       db.prepare(indexQuery).run();
     }
   })();
+  
+  // Migration helper for struct_hash column if table already exists
+  try {
+    const info = db.prepare("PRAGMA table_info(chunks)").all() as any[];
+    const hasStructHash = info.some(col => col.name === "struct_hash");
+    if (!hasStructHash && info.length > 0) {
+      db.prepare("ALTER TABLE chunks ADD COLUMN struct_hash TEXT").run();
+      db.prepare("CREATE INDEX IF NOT EXISTS idx_chunks_struct_hash ON chunks(struct_hash)").run();
+    }
+  } catch (e) {
+    // Ignore migration errors if any
+  }
 
   return db;
 }

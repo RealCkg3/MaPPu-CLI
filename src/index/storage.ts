@@ -8,6 +8,7 @@ import * as path from "path";
 import Database from "better-sqlite3";
 import { initializeDatabase } from "./schema";
 import { IndexRegistry, FileChunk } from "../mappu-core";
+import { computeStructHash } from "../parser/hasher";
 
 export class StorageManager {
   private db?: Database.Database;
@@ -125,8 +126,8 @@ export class StorageManager {
       `);
 
       const stmtChunk = db.prepare(`
-        INSERT INTO chunks (id, filePath, startLine, endLine, summary, intentTags, content)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO chunks (id, filePath, startLine, endLine, summary, intentTags, content, struct_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const stmtSymbol = db.prepare(`
@@ -175,6 +176,7 @@ export class StorageManager {
         const startLine = c.startLine || (orig ? orig.startLine : 1);
         const endLine = c.endLine || (orig ? orig.endLine : startLine + linesCount);
 
+        const sHash = (c as any).struct_hash || computeStructHash(codeContent);
         stmtChunk.run(
           c.id,
           c.filePath,
@@ -182,7 +184,8 @@ export class StorageManager {
           endLine,
           c.summary || "",
           JSON.stringify(c.intentTags || []),
-          codeContent
+          codeContent,
+          sHash
         );
       }
     })();

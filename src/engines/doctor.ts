@@ -5,6 +5,9 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { getStoredIndex, DoctorReport, DiagnosticsIssue } from "../mappu-core";
+import Database from "better-sqlite3";
+import * as path from "path";
+import { ImportGraphBuilder } from "../graph/import-graph";
 
 export class DoctorEngine {
   /**
@@ -16,48 +19,49 @@ export class DoctorEngine {
       throw new Error("No Mappu index found. Run 'mappu init' first.");
     }
 
-    const { registry, chunks: rawChunks } = indexWrap;
-    const files = registry.files;
+    const dbPath = path.join(projectRoot, ".mappu", "mappu.db");
+    const db = new Database(dbPath);
+    db.pragma("foreign_keys = ON");
 
-    // Run real offline diagnostic rules scanning inside raw files
+    // Run real offline diagnostic rules scanning inside SQLite database
     const issues: DiagnosticsIssue[] = [];
 
-    // Rule 1: Complexity Scan
-    const thresholdComplexity = options.thresholdComplexity || 12;
-    rawChunks.forEach(c => {
-      const branches = (c.content.match(/\b(if|else\s+if|for|while|catch|case|&&|\|\|)\b/g) || []).length;
-      if (branches > thresholdComplexity) {
-        issues.push({
-          severity: "high",
-          category: "complexity",
-          title: `Cyclomatic complexity elevated in chunk of ${c.filePath}`,
-          description: `This code chunk contains ${branches} logical branching decisions (if, loop, cases), which exceeds the recommendation of ${thresholdComplexity}.`,
-          affectedFiles: [c.filePath],
-          remediationSnippet: `// Proactively simplify conditional branches and isolate nesting logic into child functions:\nexport function thinHelper() {\n  // Refactored segment\n}`
-        });
-      }
+    // Rule 1: Complexity Scan SQL
+    const thresholdComplexity = options.thresholdComplexity !== undefined ? options.thresholdComplexity : 10;
+    const overComplex = db.prepare("SELECT * FROM symbols WHERE complexity > ?").all(thresholdComplexity) as any[];
+    overComplex.forEach(sym => {
+      issues.push({
+        severity: "high",
+        category: "complexity",
+        title: `Cyclomatic complexity elevated in symbol '${sym.name}'`,
+        description: `Symbol '${sym.name}' (${(sym.kind || "").toLowerCase()}) in ${sym.filePath} contains ${sym.complexity} branch decisions, exceeding the recommendation of ${thresholdComplexity}.`,
+        affectedFiles: [sym.filePath],
+        remediationSnippet: `// Proactively simplify conditional branches and isolate nesting logic into child functions:\nexport function thinHelper() {\n  // Refactored segment\n}`
+      });
     });
 
-    // Rule 2: Size Limit Checks
-    const maxLinesFile = options.thresholdLinesFile || 400;
-    files.forEach(f => {
-      // Find matching raw chunk data to approximate total line size
-      const totalLines = rawChunks.filter(c => c.filePath === f.filePath).reduce((max, c) => Math.max(max, c.endLine), 0);
-      if (totalLines > maxLinesFile) {
-        issues.push({
-          severity: "medium",
-          category: "size-file",
-          title: `File exceeds standard line limit: ${f.filePath}`,
-          description: `The file has approximately ${totalLines} lines, exceeding the recommended limit of ${maxLinesFile}.`,
-          affectedFiles: [f.filePath],
-          remediationSnippet: `// Break down oversized modules into smaller cohesive service modules.`
-        });
-      }
+    // Rule 2: Size Limit Checks (Function Level as requested)
+    const thresholdLinesFn = options.thresholdLinesFn !== undefined ? options.thresholdLinesFn : 100;
+    const overSized = db.prepare("SELECT * FROM symbols WHERE (end_line - start_line) > ?").all(thresholdLinesFn) as any[];
+    overSized.forEach(sym => {
+      const size = sym.end_line - sym.start_line;
+      issues.push({
+        severity: "medium",
+        category: "size-fn",
+        title: `Function size exceeds standard limit: ${sym.name}`,
+        description: `Function '${sym.name}' spans ${size} lines in ${sym.filePath}, exceeding the recommended limit of ${thresholdLinesFn}.`,
+        affectedFiles: [sym.filePath],
+        remediationSnippet: `// Break down oversized function/method into smaller cohesive helpers.`
+      });
     });
 
-    // Rule 3: Async with no try/catch
-    rawChunks.forEach(c => {
+    // Rule 3: Async with no try/catch (using hybrid DB scan)
+    const chunks = db.prepare("SELECT filePath, content FROM chunks").all() as any[];
+    const seenAsyncNoCatch = new Set<string>();
+    chunks.forEach(c => {
+      if (seenAsyncNoCatch.has(c.filePath)) return;
       if (c.content.includes("async ") && !c.content.includes("try") && !c.content.includes(".catch")) {
+        seenAsyncNoCatch.add(c.filePath);
         issues.push({
           severity: "high",
           category: "async-no-catch",
@@ -69,58 +73,67 @@ export class DoctorEngine {
       }
     });
 
-    // Rule 4: Parameter Limits
-    const maxParams = options.thresholdParams || 4;
-    rawChunks.forEach(c => {
-      // Simple regex approximation of parameter declaration count
-      const matches = c.content.match(/function\s+\w+\s*\(([^)]*)\)/);
-      if (matches) {
-        const paramStr = matches[1];
-        const paramsCount = paramStr.split(",").filter(Boolean).length;
-        if (paramsCount > maxParams) {
-          issues.push({
-            severity: "medium",
-            category: "params",
-            title: `Excessive function parameters signature`,
-            description: `Function signature contains ${paramsCount} arguments, violating clean parameters count limit (${maxParams}).`,
-            affectedFiles: [c.filePath],
-            remediationSnippet: `// Aggregate multiple inputs into a cohesive options parameters object:\ninterface ConfigOptions {\n  settingA: string;\n  settingB: number;\n}`
-          });
-        }
+    // Rule 4: Parameter Limits SQL
+    const thresholdParams = options.thresholdParams !== undefined ? options.thresholdParams : 4;
+    const excessParams = db.prepare("SELECT * FROM symbols WHERE param_count > ?").all(thresholdParams) as any[];
+    excessParams.forEach(sym => {
+      issues.push({
+        severity: "medium",
+        category: "params",
+        title: `Excessive parameters signature in '${sym.name}'`,
+        description: `Function signature '${sym.name}' in ${sym.filePath} contains ${sym.param_count} arguments, violating clean parameters count limit (${thresholdParams}).`,
+        affectedFiles: [sym.filePath],
+        remediationSnippet: `// Aggregate multiple inputs into a cohesive options parameters object:\ninterface ConfigOptions {\n  settingA: string;\n  settingB: number;\n}`
+      });
+    });
+
+    // Rule 5: Circular Imports Scanning using graphology
+    try {
+      const graphBuilder = new ImportGraphBuilder(projectRoot);
+      const cycles = graphBuilder.findCycles();
+      cycles.forEach(cycle => {
+        issues.push({
+          severity: "high",
+          category: "circular-deps",
+          title: "Circular import cycle boundary detected",
+          description: `Circular imports discovered between module path: ${cycle.join(" -> ")}. This leads to tightly coupled schemas & runtime errors.`,
+          affectedFiles: cycle,
+          remediationSnippet: `// Introduce a decoupled interface or separate shared state repository file to capture mutual details.`
+        });
+      });
+    } catch (err) {
+      console.error("Circular deps scan failed using graphology-dag:", err);
+    }
+
+    // Rule 6: Dead Export Rule
+    const exportedSymbols = db.prepare("SELECT * FROM symbols WHERE isExported = 1").all() as any[];
+    const allImports = db.prepare("SELECT imported_names FROM imports").all() as { imported_names: string }[];
+    const importedNames = new Set<string>();
+    allImports.forEach(imp => {
+      try {
+        const names = JSON.parse(imp.imported_names) as string[];
+        names.forEach(n => importedNames.add(n));
+      } catch {
+        // fallback
       }
     });
 
-    // Rule 5: Circular Imports Scanning
-    const importGraph: Record<string, string[]> = {};
-    files.forEach(f => {
-      importGraph[f.filePath] = f.imports || [];
-    });
+    exportedSymbols.forEach(sym => {
+      // Ignore setup / standard framework-entry functions
+      if (sym.name === "default" || sym.name === "main" || sym.filePath.includes("server.ts") || sym.filePath.includes("cli/")) {
+        return;
+      }
 
-    // Simple depth 2 circular validation
-    Object.keys(importGraph).forEach(fileA => {
-      const imports = importGraph[fileA];
-      imports.forEach(imp => {
-        // Resolve target file path reference
-        const fileBNode = files.find(f => f.filePath !== fileA && f.filePath.includes(imp));
-        if (fileBNode) {
-          const fileBImports = importGraph[fileBNode.filePath] || [];
-          const hasBackRef = fileBImports.some(bi => fileA.includes(bi));
-          if (hasBackRef) {
-            // Confirm circular cycle
-            const exists = issues.some(iss => iss.category === "circular-deps" && iss.affectedFiles.includes(fileBNode.filePath) && iss.affectedFiles.includes(fileA));
-            if (!exists) {
-              issues.push({
-                severity: "high",
-                category: "circular-deps",
-                title: "Circular import cycle boundary detected",
-                description: `Circular imports discovered between module ${fileA} and ${fileBNode.filePath}. This leads to tightly coupled schemas & runtime errors.`,
-                affectedFiles: [fileA, fileBNode.filePath],
-                remediationSnippet: `// Introduce a decoupled interface or separate shared state repository file to capture mutual details.`
-              });
-            }
-          }
-        }
-      });
+      if (!importedNames.has(sym.name)) {
+        issues.push({
+          severity: "medium",
+          category: "dead-export",
+          title: `Dead export: symbol '${sym.name}' is exported but never imported`,
+          description: `The symbol '${sym.name}' is marked as exported in ${sym.filePath} but does not appear in any import statements across the codebase. Use it or remove the export keyword.`,
+          affectedFiles: [sym.filePath],
+          remediationSnippet: `// Remove the 'export' keyword if only used internally inside this file:\nconst ${sym.name} = ...`
+        });
+      }
     });
 
     // Calculation of overall robustness index
@@ -155,6 +168,7 @@ export class DoctorEngine {
       }
     }
 
+    db.close();
     return report;
   }
 

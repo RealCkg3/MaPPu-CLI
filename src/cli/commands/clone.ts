@@ -15,7 +15,12 @@ export async function executeClone(): Promise<void> {
     console.log(`\n${colors.green}✔ No duplicate block clones identified! Pure structural modularity.${colors.reset}`);
     return;
   }
-  clones.forEach(c => {
-    console.log(`  Duplicate across: ${colors.teal}${c.filePathA}${colors.reset} & ${colors.teal}${c.filePathB}${colors.reset}`);
+  clones.forEach((c: any) => {
+    const rangeA = c.startLineA ? `:${c.startLineA}-${c.endLineA}` : "";
+    const rangeB = c.startLineB ? `:${c.startLineB}-${c.endLineB}` : "";
+    console.log(`  Duplicate across: ${colors.teal}${c.filePathA}${rangeA}${colors.reset} & ${colors.teal}${c.filePathB}${rangeB}${colors.reset}`);
+    if (c.similarityKind) {
+      console.log(`    Similarity: ${colors.indigo}${c.similarityKind}${colors.reset}`);
+    }
   });
 }
