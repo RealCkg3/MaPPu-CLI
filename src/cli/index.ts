@@ -10,6 +10,7 @@ import { DeadCodeEngine } from "../engines/dead-code";
 import { CloneEngine } from "../engines/clone";
 import { SecurityEngine, SecuritySASTEngine } from "../engines/security";
 import { GitChurnEngine } from "../engines/git";
+import { MapEngine } from "../engines/map";
 import { SearchEngine } from "../engines/search";
 import { DoctorEngine } from "../engines/doctor";
 import { TraceEngine } from "../engines/trace";
@@ -19,6 +20,8 @@ import { ScopeEngine } from "../engines/scope";
 import { BenchmarkEngine } from "../engines/benchmark";
 import { TestGapEngine } from "../engines/test-gap";
 import { DiffEngine } from "../engines/diff";
+import { StatsEngine } from "../engines/stats";
+import { executeAsk } from "./commands/ask";
 import {
   getStoredIndex,
   indexCodebase,
@@ -244,6 +247,17 @@ ${colors.green}${colors.bold}✔ Mappu Database Constructed Successfully!${color
       break;
     }
 
+    case "ask": {
+      const rawQuestion = positionals.slice(1).join(" ");
+      try {
+        await executeAsk(rawQuestion);
+      } catch (err: any) {
+        console.error(`Ask error: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "search": {
       const rawQuery = positionals.slice(1).join(" ");
       if (!rawQuery && !options.pattern && !options.symbol) {
@@ -414,30 +428,17 @@ ${colors.bold}Available Diagnostic Quality Rules:${colors.reset}
 
         const files = index.registry.files;
         const formatType = (options.format || "text").toLowerCase();
+        const maxDepth = options.depth ? parseInt(options.depth as string, 10) : undefined;
+        const mapEngine = new MapEngine();
 
         if (formatType === "mermaid") {
-          let mermaid = "graph TD\n";
-          files.forEach(f => {
-            const name = f.filePath.replace(/[^a-zA-Z0-9]/g, "_");
-            mermaid += `  ${name}["${f.filePath}"]\n`;
-            f.imports.forEach(imp => {
-              const cleanImp = imp.replace(/[^a-zA-Z0-9]/g, "_");
-              mermaid += `  ${name} --> ${cleanImp}\n`;
-            });
-          });
+          const mermaid = mapEngine.generateMermaidGraph(projectRoot, maxDepth);
           deliverOutput(files, mermaid, options);
         } else if (formatType === "dot") {
-          let dot = "digraph Codebase {\n";
-          files.forEach(f => {
-            dot += `  "${f.filePath}";\n`;
-            f.imports.forEach(imp => {
-              dot += `  "${f.filePath}" -> "${imp}";\n`;
-            });
-          });
-          dot += "}\n";
+          const dot = mapEngine.generateDotGraph(projectRoot, maxDepth);
           deliverOutput(files, dot, options);
         } else {
-          // Default text tree mapping
+          // Default text tree mapping (can be embellished with depth control if mapped)
           let outText = `\n${colors.bold}${colors.indigo}PROJECT BOUNDARY TOPOLOGY MAP:${colors.reset}\n`;
           files.forEach(f => {
             outText += `  📂 ${colors.teal}${f.filePath}${colors.reset}\n`;
@@ -604,7 +605,7 @@ ${colors.bold}Available Diagnostic Quality Rules:${colors.reset}
         const engine = new GitChurnEngine();
         const scanned = await scanCodebase(projectRoot);
         const files = scanned.map(f => f.filePath);
-        const results = engine.listHotspots(files);
+        const results = await engine.listHotspots(files, projectRoot);
 
         if (gcmd === "hotspots") {
           let outText = `\n${colors.bold}Hotspot Unstable zones checklist:${colors.reset}\n`;
@@ -621,19 +622,16 @@ ${colors.bold}Available Diagnostic Quality Rules:${colors.reset}
         } else if (gcmd === "cochange") {
           const targetFile = positionals[2] || files[0] || "index.ts";
           let outText = `\n${colors.bold}Temporal Co-Change logical coupling trace for ${targetFile}:${colors.reset}\n`;
-          // Find standard files with overlapping characters in folder name to mimic coupling ratio
-          const targetDir = path.dirname(targetFile);
-          const coupled = files
-            .filter(f => f !== targetFile && path.dirname(f) === targetDir)
-            .map(f => ({
-              file: f,
-              ratio: Math.round(((f.length + targetFile.length) * 17) % 35 + 50)
-            }))
-            .sort((a, b) => b.ratio - a.ratio);
+          
+          const coupled = engine.getCoupledFiles(targetFile, projectRoot);
 
-          coupled.forEach(c => {
-            outText += `  - ${colors.teal}${c.file}${colors.reset} : ${colors.yellow}${c.ratio}% co-change index${colors.reset}\n`;
-          });
+          if (coupled.length === 0) {
+            outText += `  ${colors.yellow}No verified temporal co-changes recorded for this module.${colors.reset}\n`;
+          } else {
+            coupled.forEach(c => {
+              outText += `  - ${colors.teal}${c.file}${colors.reset} : ${colors.yellow}${c.ratio}% co-change index${colors.reset} (${c.cochangeCount} co-commits)\n`;
+            });
+          }
           deliverOutput(coupled, outText, options);
         } else if (gcmd === "blame") {
           const targetFile = positionals[2] || files[0] || "index.ts";
@@ -872,25 +870,31 @@ ${colors.bold}Available Diagnostic Quality Rules:${colors.reset}
 
     case "stats": {
       try {
-        const index = getStoredIndex(projectRoot);
-        const filesCount = index ? index.registry.files.length : 0;
-        const chunksCount = index ? index.registry.chunks.length : 0;
-        const scanned = await scanCodebase(projectRoot);
-        const totalLines = scanned.reduce((sum, f) => sum + f.content.split("\n").length, 0);
+        const statsEngine = new StatsEngine();
+        const report = statsEngine.getStats(projectRoot);
 
-        const report = {
-          files: filesCount || scanned.length,
-          lines: totalLines,
-          avgComplexity: chunksCount > 0 ? 4.2 : 1.0
-        };
+        let outText = `\n${colors.bold}${colors.indigo}Mappu Repository High-Level Metrics:${colors.reset}\n`;
+        outText += `  Total Files           : ${colors.teal}${report.totalFiles}${colors.reset}\n`;
+        outText += `  Estimated Code Lines  : ${colors.teal}${report.totalLines}${colors.reset}\n`;
+        outText += `  Average Complexity    : ${colors.yellow}${report.avgComplexity}${colors.reset}\n`;
+        outText += `  Maximum Complexity    : ${colors.red}${report.maxComplexity}${colors.reset}\n`;
+        outText += `  Louvain Communities   : ${colors.magenta}${report.communityCount}${colors.reset}\n`;
 
-        let outText = `
-${colors.bold}${colors.indigo}Mappu Repository High-Level Metrics:${colors.reset}
-  Total Files           : ${colors.teal}${report.files}${colors.reset}
-  Estimated Code Lines  : ${colors.teal}${report.lines}${colors.reset}
-  Average Complexity    : ${colors.yellow}${report.avgComplexity}${colors.reset}
-  Primary Language      : ${colors.cyan}TypeScript / JavaScript${colors.reset}
-        `;
+        if (report.languageDistribution.length > 0) {
+          outText += `\n${colors.bold}Language Distribution:${colors.reset}\n`;
+          report.languageDistribution.forEach(l => {
+            outText += `  - ${colors.cyan}${l.language.padEnd(18)}${colors.reset} : ${colors.teal}${l.count} files${colors.reset}\n`;
+          });
+        }
+
+        if (report.topComplexFiles.length > 0) {
+          outText += `\n${colors.bold}Top 10 Most Complex Files:${colors.reset}\n`;
+          report.topComplexFiles.forEach((f, idx) => {
+            outText += `  ${idx + 1}. ${colors.teal}${f.filePath}${colors.reset}\n`;
+            outText += `     Cumulative Complexity: ${colors.yellow}${f.totalComplexity}${colors.reset} | Max Single Class/Function: ${colors.red}${f.maxComplexity}${colors.reset} (${colors.cyan}${f.language}${colors.reset})\n`;
+          });
+        }
+
         deliverOutput(report, outText, options);
       } catch (err: any) {
         console.error(`Stats lookup failed: ${err.message}`);

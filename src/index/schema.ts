@@ -14,7 +14,8 @@ export const SQLiteSchema = {
       description TEXT NOT NULL,
       languages TEXT NOT NULL,
       scannedAt TEXT NOT NULL,
-      hash TEXT NOT NULL DEFAULT ''
+      hash TEXT NOT NULL DEFAULT '',
+      line_count INTEGER NOT NULL DEFAULT 0
     )
   `,
   symbolsTable: `
@@ -99,6 +100,17 @@ export const SQLiteSchema = {
       linesDeleted INTEGER NOT NULL,
       churnScore REAL NOT NULL,
       FOREIGN KEY (filePath) REFERENCES files(filePath) ON DELETE CASCADE
+    )
+  `,
+  cochangeTable: `
+    CREATE TABLE IF NOT EXISTS cochange (
+      fileA TEXT NOT NULL,
+      fileB TEXT NOT NULL,
+      cochangeCount INTEGER NOT NULL,
+      ratio REAL NOT NULL,
+      PRIMARY KEY (fileA, fileB),
+      FOREIGN KEY (fileA) REFERENCES files(filePath) ON DELETE CASCADE,
+      FOREIGN KEY (fileB) REFERENCES files(filePath) ON DELETE CASCADE
     )
   `,
   scopeRulesTable: `
@@ -202,6 +214,10 @@ export const SQLiteIndexes = [
   'CREATE INDEX IF NOT EXISTS idx_clones_fileA ON clones(fileA)',
   'CREATE INDEX IF NOT EXISTS idx_clones_fileB ON clones(fileB)',
 
+  // cochange indexes
+  'CREATE INDEX IF NOT EXISTS idx_cochange_fileA ON cochange(fileA)',
+  'CREATE INDEX IF NOT EXISTS idx_cochange_fileB ON cochange(fileB)',
+
   // security_findings indexes
   'CREATE INDEX IF NOT EXISTS idx_security_findings_file ON security_findings(file)',
 
@@ -249,6 +265,17 @@ export function initializeDatabase(dbPath: string): Database.Database {
     if (!hasStructHash && info.length > 0) {
       db.prepare("ALTER TABLE chunks ADD COLUMN struct_hash TEXT").run();
       db.prepare("CREATE INDEX IF NOT EXISTS idx_chunks_struct_hash ON chunks(struct_hash)").run();
+    }
+  } catch (e) {
+    // Ignore migration errors if any
+  }
+
+  // Migration helper for line_count column if table already exists
+  try {
+    const info = db.prepare("PRAGMA table_info(files)").all() as any[];
+    const hasLineCount = info.some(col => col.name === "line_count");
+    if (!hasLineCount && info.length > 0) {
+      db.prepare("ALTER TABLE files ADD COLUMN line_count INTEGER NOT NULL DEFAULT 0").run();
     }
   } catch (e) {
     // Ignore migration errors if any

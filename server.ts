@@ -16,6 +16,7 @@ import { ScopeEngine } from "./src/engines/scope.js";
 import { BenchmarkEngine } from "./src/engines/benchmark.js";
 import { TestGapEngine } from "./src/engines/test-gap.js";
 import { DiffEngine } from "./src/engines/diff.js";
+import { StatsEngine } from "./src/engines/stats.js";
 import * as dotenv from "dotenv";
 import { exec } from "child_process";
 
@@ -567,7 +568,7 @@ app.get("/api/mappu/git", async (req, res) => {
     const runner = new GitChurnEngine();
     const files = await scanCodebase(PROJECT_ROOT);
     const paths = files.map(f => f.filePath);
-    const results = runner.listHotspots(paths);
+    const results = await runner.listHotspots(paths, PROJECT_ROOT);
     res.json({ results });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -602,6 +603,17 @@ app.get("/api/mappu/test-gap", (req, res) => {
     const runner = new TestGapEngine();
     const report = runner.analyzeGaps(PROJECT_ROOT);
     res.json({ report });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET global repository analytics and statistics
+app.get("/api/mappu/stats", (req, res) => {
+  try {
+    const runner = new StatsEngine();
+    const stats = runner.getStats(PROJECT_ROOT);
+    res.json({ stats });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1123,7 +1135,7 @@ ${logs.map(l => ` \x1b[90m[Index]\x1b[0m ${l}`).join("\n")}
       const runner = new GitChurnEngine();
       const files = await scanCodebase(PROJECT_ROOT);
       const paths = files.map(f => f.filePath);
-      const results = runner.listHotspots(paths);
+      const results = await runner.listHotspots(paths, PROJECT_ROOT);
       let out = `\x1b[33mCalculating Git Revision Churn and Hotspot Matrices...\x1b[0m\n`;
       out += `\x1b[90m┌──────────────────────────────────────────────────────────────┐\x1b[0m\n`;
       results.forEach(item => {

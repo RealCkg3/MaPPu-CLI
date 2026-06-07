@@ -32,12 +32,12 @@ export class StorageManager {
     return this.db!;
   }
 
-  public insertFile(filePath: string, description: string, languages: string, scannedAt: string, hash: string = ""): void {
+  public insertFile(filePath: string, description: string, languages: string, scannedAt: string, hash: string = "", lineCount: number = 0): void {
     const db = this.ensureDb();
     db.prepare(`
-      INSERT OR REPLACE INTO files (filePath, description, languages, scannedAt, hash)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(filePath, description, languages, scannedAt, hash);
+      INSERT OR REPLACE INTO files (filePath, description, languages, scannedAt, hash, line_count)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(filePath, description, languages, scannedAt, hash, lineCount);
   }
 
   public insertSymbol(id: string, name: string, kind: string, filePath: string, startLine: number, endLine: number, isExported: boolean | number): void {
@@ -121,8 +121,8 @@ export class StorageManager {
       db.prepare(`DELETE FROM chunks`).run();
 
       const stmtFile = db.prepare(`
-        INSERT INTO files (filePath, description, languages, scannedAt, hash)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO files (filePath, description, languages, scannedAt, hash, line_count)
+        VALUES (?, ?, ?, ?, ?, ?)
       `);
 
       const stmtChunk = db.prepare(`
@@ -143,12 +143,24 @@ export class StorageManager {
       // 1. Insert files
       for (const f of registry.files || []) {
         const fileHash = f.hash || hashesMap.get(f.filePath) || "";
+        let lineCount = 0;
+        try {
+          const fullPath = path.resolve(projectRoot, f.filePath);
+          if (fs.existsSync(fullPath)) {
+            const content = fs.readFileSync(fullPath, "utf-8");
+            lineCount = content.split("\n").length;
+          }
+        } catch {
+          // ignore
+        }
+
         stmtFile.run(
           f.filePath,
           f.description || `Source file of type ${f.languages}`,
           f.languages || "PlainText",
           registry.scannedAt,
-          fileHash
+          fileHash,
+          lineCount
         );
 
         // Save exports as symbols

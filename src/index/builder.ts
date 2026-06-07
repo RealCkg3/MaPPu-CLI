@@ -11,6 +11,7 @@ import { computeStructHash } from "../parser/hasher";
 import { CommunityDetector } from "../graph/community";
 import { Tokenizer } from "./tokenizer";
 import { BM25SearchEngine } from "./bm25";
+import { GitChurnEngine } from "../engines/git";
 import * as crypto from "crypto";
 import * as path from "path";
 import * as os from "os";
@@ -425,8 +426,8 @@ export class IndexBuilder {
       
       db.transaction(() => {
         const stmtFile = db.prepare(`
-          INSERT INTO files (filePath, description, languages, scannedAt, hash)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO files (filePath, description, languages, scannedAt, hash, line_count)
+          VALUES (?, ?, ?, ?, ?, ?)
         `);
 
         const stmtSymbol = db.prepare(`
@@ -465,7 +466,8 @@ export class IndexBuilder {
             description = "Ecosystem package dependencies, assets scripts, metadata configs.";
           }
 
-          stmtFile.run(filePath, description, parsed.language, scannedAt, parsed.hash);
+          const lineCount = parsed.content.split("\n").length;
+          stmtFile.run(filePath, description, parsed.language, scannedAt, parsed.hash, lineCount);
 
           // Insert Symbols
           for (const sym of parsed.symbols) {
@@ -536,6 +538,15 @@ export class IndexBuilder {
           stmtEdge.run(call.id, call.source, call.target, "calls");
         }
       })();
+    }
+
+    // 6.5 Initialize Git metrics and co-change tables
+    if (onProgress) onProgress("Populating Git revision metrics and logical co-changes coupling matrices...");
+    try {
+      const gitEngine = new GitChurnEngine();
+      await gitEngine.initializeGitMetrics(projectRoot, db);
+    } catch (err: any) {
+      console.error("[IndexBuilder] Git metrics initialization failed:", err);
     }
 
     // 7. Run community detection over fully updated import graph in database
