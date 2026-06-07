@@ -9,6 +9,9 @@ import { MappuLLM } from "./base";
 import { GeminiAdapter } from "./gemini";
 import { OpenAIAdapter } from "./openai";
 import { OllamaAdapter } from "./ollama";
+import { AnthropicAdapter } from "./anthropic";
+import { KimiAdapter } from "./kimi";
+import { DeepSeekAdapter } from "./deepseek";
 
 export function getLLMAdapter(provider?: string, options?: Record<string, any>): MappuLLM {
   let finalProvider = provider;
@@ -40,6 +43,15 @@ export function getLLMAdapter(provider?: string, options?: Record<string, any>):
       return new OpenAIAdapter(finalOptions);
     case "ollama":
       return new OllamaAdapter(finalOptions);
+    case "anthropic":
+    case "claude":
+      return new AnthropicAdapter(finalOptions);
+    case "kimi":
+    case "moonshot":
+      return new KimiAdapter(finalOptions);
+    case "deepseek":
+    case "deepsearch":
+      return new DeepSeekAdapter(finalOptions);
     case "gemini":
     default:
       return new GeminiAdapter();

@@ -31,6 +31,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.102.0",
     "@ast-grep/napi": "^0.43.0",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
@@ -50,6 +51,7 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "okapibm25": "^1.4.1",
+    "openai": "^6.42.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "simple-git": "^3.36.0",
