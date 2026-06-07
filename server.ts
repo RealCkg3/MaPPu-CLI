@@ -523,7 +523,7 @@ app.get("/api/mappu/clone", async (req, res) => {
   try {
     const runner = new CloneEngine();
     const files = await scanCodebase(PROJECT_ROOT);
-    const results = runner.detectDuplicates(files);
+    const results = runner.detectDuplicates(files, PROJECT_ROOT);
     res.json({ results });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
