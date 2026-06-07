@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GoogleGenAI } from "@google/genai";
 import { getStoredIndex, ExplanationReport } from "../mappu-core";
+import { getLLMAdapter } from "../adapters/llm/factory";
 
 export class ExplainEngine {
   /**
@@ -72,11 +72,10 @@ export class ExplainEngine {
       mermaidFlowchart
     };
 
-    // If AI mode requested and key present, run Gemini refinement
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (options.ai && apiKey) {
+    // If AI mode requested, run refinement
+    if (options.ai) {
       try {
-        const enriched = await this.enrichExplanationWithAI(report, apiKey);
+        const enriched = await this.enrichExplanationWithAI(report);
         return enriched;
       } catch {
         // Fall back gracefully
@@ -86,8 +85,8 @@ export class ExplainEngine {
     return report;
   }
 
-  private async enrichExplanationWithAI(report: ExplanationReport, apiKey: string): Promise<ExplanationReport> {
-    const ai = new GoogleGenAI({ apiKey });
+  private async enrichExplanationWithAI(report: ExplanationReport): Promise<ExplanationReport> {
+    const adapter = getLLMAdapter();
     const prompt = `
       Given this static walkthrough explanation, return an enriched walkthrough with detailed AI analysis and explanations.
       Walking target: ${report.target}
@@ -95,15 +94,10 @@ export class ExplainEngine {
       ${JSON.stringify(report, null, 2)}
     `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        systemInstruction: "You are the Mappu Code Explainer. Enrich static architectural Walkthroughs.",
-      }
+    const responseText = await adapter.generate(prompt, "You are the Mappu Code Explainer. Enrich static architectural Walkthroughs.", {
+      responseMimeType: "application/json"
     });
 
-    return JSON.parse(response.text || JSON.stringify(report));
+    return JSON.parse(responseText || JSON.stringify(report));
   }
 }

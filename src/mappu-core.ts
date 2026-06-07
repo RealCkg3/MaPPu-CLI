@@ -3,26 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GoogleGenAI, Type } from "@google/genai";
 import * as fs from "fs";
 import * as path from "path";
 import Database from "better-sqlite3";
-
-// Initialize Gemini Client safely
-function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is not defined in the environment secrets.");
-  }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      },
-    },
-  });
-}
+import { getLLMAdapter } from "./adapters/llm/factory";
 
 // Interfaces for Mappu Indexing Architecture
 export interface FileChunk {
@@ -343,7 +327,7 @@ export async function searchIntent(projectRoot: string, query: string): Promise<
   }
 
   const { registry, chunks: rawChunks } = indexWrap;
-  const ai = getGeminiClient();
+  const adapter = getLLMAdapter();
 
   // Combine query and context
   const searchContextPrompt = `
@@ -362,28 +346,23 @@ export async function searchIntent(projectRoot: string, query: string): Promise<
     Explain precisely why it matches.
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
-    contents: searchContextPrompt,
-    config: {
-      responseMimeType: "application/json",
-      systemInstruction: "You are Mappu Semantic Code Search Router. Analyze intent similarity across code files and return ranked JSON matches.",
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            chunkId: { type: Type.STRING },
-            score: { type: Type.INTEGER },
-            matchRationale: { type: Type.STRING, description: "A conversational explanation of why this file is logically matched with the user's intent." }
-          },
-          required: ["chunkId", "score", "matchRationale"]
-        }
+  const responseText = await adapter.generate(searchContextPrompt, "You are Mappu Semantic Code Search Router. Analyze intent similarity across code files and return ranked JSON matches.", {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          chunkId: { type: "string" },
+          score: { type: "integer" },
+          matchRationale: { type: "string", description: "A conversational explanation of why this file is logically matched with the user's intent." }
+        },
+        required: ["chunkId", "score", "matchRationale"]
       }
     }
   });
 
-  const rawMatches: { chunkId: string; score: number; matchRationale: string }[] = JSON.parse(response.text || "[]");
+  const rawMatches: { chunkId: string; score: number; matchRationale: string }[] = JSON.parse(responseText || "[]");
   const results: SearchResult[] = [];
 
   for (const match of rawMatches) {
@@ -430,7 +409,7 @@ export async function traceExecution(projectRoot: string, query: string): Promis
   }
 
   const { registry, chunks: rawChunks } = indexWrap;
-  const ai = getGeminiClient();
+  const adapter = getLLMAdapter();
 
   const tracePrompt = `
     User wishes to trace a call flow or procedural journey inside the repository.
@@ -447,39 +426,34 @@ export async function traceExecution(projectRoot: string, query: string): Promis
     Be precise about which file, function, or block runs at each step of the chain. Use available code chunks data.
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
-    contents: tracePrompt,
-    config: {
-      responseMimeType: "application/json",
-      systemInstruction: "You are the Mappu Tracer. Trace sequence flows across code structures and express them in structured, readable trace blocks.",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          intent: { type: Type.STRING },
-          overviewFlow: { type: Type.STRING, description: "A high-level summary paragraph showing the logic cascade." },
-          steps: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                step: { type: Type.INTEGER },
-                filePath: { type: Type.STRING },
-                blockName: { type: Type.STRING, description: "The function name, routine, class method, or express middleware involved." },
-                lines: { type: Type.STRING, description: "e.g. 'line 14-40'" },
-                description: { type: Type.STRING, description: "Explanation of what is processed or calculated at this node." },
-                logicSnippet: { type: Type.STRING, description: "The code fragment, import statement, or key evaluation line defining this step." }
-              },
-              required: ["step", "filePath", "blockName", "lines", "description"]
-            }
+  const responseText = await adapter.generate(tracePrompt, "You are the Mappu Tracer. Trace sequence flows across code structures and express them in structured, readable trace blocks.", {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: "object",
+      properties: {
+        intent: { type: "string" },
+        overviewFlow: { type: "string", description: "A high-level summary paragraph showing the logic cascade." },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              step: { type: "integer" },
+              filePath: { type: "string" },
+              blockName: { type: "string", description: "The function name, routine, class method, or express middleware involved." },
+              lines: { type: "string", description: "e.g. 'line 14-40'" },
+              description: { type: "string", description: "Explanation of what is processed or calculated at this node." },
+              logicSnippet: { type: "string", description: "The code fragment, import statement, or key evaluation line defining this step." }
+            },
+            required: ["step", "filePath", "blockName", "lines", "description"]
           }
-        },
-        required: ["intent", "overviewFlow", "steps"]
-      }
+        }
+      },
+      required: ["intent", "overviewFlow", "steps"]
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return JSON.parse(responseText || "{}");
 }
 
 // ----------------------
@@ -509,7 +483,7 @@ export async function runDoctor(projectRoot: string, intent: string): Promise<Do
   }
 
   const { registry, chunks: rawChunks } = indexWrap;
-  const ai = getGeminiClient();
+  const adapter = getLLMAdapter();
 
   const doctorPrompt = `
     Analyze the codebase with focus on high-safety, logic alignment, or architectural validation.
@@ -526,40 +500,35 @@ export async function runDoctor(projectRoot: string, intent: string): Promise<Do
     Highlight real risks or missing best-practice abstractions for "${intent}".
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
-    contents: doctorPrompt,
-    config: {
-      responseMimeType: "application/json",
-      systemInstruction: "You are the Mappu Doctor Engine. Rigorously diagnose structural risks, security gaps, and logical discrepancies. Provide elegant remediation.",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          diagnosedIntent: { type: Type.STRING },
-          overallScore: { type: Type.INTEGER, description: "Robusness index from 0 (broken/unsecure) to 100 (flawless production grade)" },
-          summaryReview: { type: Type.STRING },
-          issues: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                severity: { type: Type.STRING, enum: ["high", "medium", "low"] },
-                category: { type: Type.STRING, description: "e.g., 'Error Handling', 'Validation Gap', 'Security Check'" },
-                title: { type: Type.STRING },
-                description: { type: Type.STRING },
-                affectedFiles: { type: Type.ARRAY, items: { type: Type.STRING } },
-                remediationSnippet: { type: Type.STRING, description: "Pristine standard code block solving this diagnostic issue." }
-              },
-              required: ["severity", "category", "title", "description", "affectedFiles"]
-            }
+  const responseText = await adapter.generate(doctorPrompt, "You are the Mappu Doctor Engine. Rigorously diagnose structural risks, security gaps, and logical discrepancies. Provide elegant remediation.", {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: "object",
+      properties: {
+        diagnosedIntent: { type: "string" },
+        overallScore: { type: "integer", description: "Robusness index from 0 (broken/unsecure) to 100 (flawless production grade)" },
+        summaryReview: { type: "string" },
+        issues: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              severity: { type: "string", enum: ["high", "medium", "low"] },
+              category: { type: "string", description: "e.g., 'Error Handling', 'Validation Gap', 'Security Check'" },
+              title: { type: "string" },
+              description: { type: "string" },
+              affectedFiles: { type: "array", items: { type: "string" } },
+              remediationSnippet: { type: "string", description: "Pristine standard code block solving this diagnostic issue." }
+            },
+            required: ["severity", "category", "title", "description", "affectedFiles"]
           }
-        },
-        required: ["diagnosedIntent", "overallScore", "summaryReview", "issues"]
-      }
+        }
+      },
+      required: ["diagnosedIntent", "overallScore", "summaryReview", "issues"]
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return JSON.parse(responseText || "{}");
 }
 
 // ----------------------
@@ -588,7 +557,7 @@ export async function refactorCodebase(projectRoot: string, directive: string): 
   }
 
   const { registry, chunks: rawChunks } = indexWrap;
-  const ai = getGeminiClient();
+  const adapter = getLLMAdapter();
 
   const refactorPrompt = `
     Analyze the codebase files & chunks and generate a pristine, safe, concrete refactoring plan to implement the following goal:
@@ -605,40 +574,35 @@ export async function refactorCodebase(projectRoot: string, directive: string): 
     For your proposed steps, find matching code in the snippets or propose concrete code templates. Ensure replacementContent is beautifully integrated.
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
-    contents: refactorPrompt,
-    config: {
-      responseMimeType: "application/json",
-      systemInstruction: "You are the Mappu Refactor Architect. Formulate precise code refactoring recipes. Each step must specify targetContent (what to find) and replacementContent (the modern clean replacements).",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          directive: { type: Type.STRING },
-          strategyOverview: { type: Type.STRING, description: "Executive summary explaining the architectural changes needed to accomplish this directive." },
-          expectedOutcomes: { type: Type.STRING, description: "Expected result of these refactoring steps (safety, modularity, etc.)" },
-          steps: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                step: { type: Type.INTEGER },
-                filePath: { type: Type.STRING },
-                action: { type: Type.STRING, enum: ["modify", "create", "delete"] },
-                explanation: { type: Type.STRING, description: "What this specific line-change accomplished." },
-                targetContent: { type: Type.STRING, description: "The exact original target block to be searched for (leave empty for file creations)" },
-                replacementContent: { type: Type.STRING, description: "Pragmatic, beautiful target-replacement code conforming to the target tech stacks" }
-              },
-              required: ["step", "filePath", "action", "explanation", "targetContent", "replacementContent"]
-            }
+  const responseText = await adapter.generate(refactorPrompt, "You are the Mappu Refactor Architect. Formulate precise code refactoring recipes. Each step must specify targetContent (what to find) and replacementContent (the modern clean replacements).", {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: "object",
+      properties: {
+        directive: { type: "string" },
+        strategyOverview: { type: "string", description: "Executive summary explaining the architectural changes needed to accomplish this directive." },
+        expectedOutcomes: { type: "string", description: "Expected result of these refactoring steps (safety, modularity, etc.)" },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              step: { type: "integer" },
+              filePath: { type: "string" },
+              action: { type: "string", enum: ["modify", "create", "delete"] },
+              explanation: { type: "string", description: "What this specific line-change accomplished." },
+              targetContent: { type: "string", description: "The exact original target block to be searched for (leave empty for file creations)" },
+              replacementContent: { type: "string", description: "Pragmatic, beautiful target-replacement code conforming to the target tech stacks" }
+            },
+            required: ["step", "filePath", "action", "explanation", "targetContent", "replacementContent"]
           }
-        },
-        required: ["directive", "strategyOverview", "expectedOutcomes", "steps"]
-      }
+        }
+      },
+      required: ["directive", "strategyOverview", "expectedOutcomes", "steps"]
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return JSON.parse(responseText || "{}");
 }
 
 // ----------------------
@@ -663,7 +627,7 @@ export async function explainCodebase(projectRoot: string, query: string): Promi
   }
 
   const { registry, chunks: rawChunks } = indexWrap;
-  const ai = getGeminiClient();
+  const adapter = getLLMAdapter();
 
   const explainPrompt = `
     Provide a deep, conceptual walkthrough and design flow visualization for this system.
@@ -679,38 +643,33 @@ export async function explainCodebase(projectRoot: string, query: string): Promi
     ${registry.chunks.map(c => `[ID: ${c.id}] ${c.filePath}: ${c.summary}`).join("\n")}
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
-    contents: explainPrompt,
-    config: {
-      responseMimeType: "application/json",
-      systemInstruction: "You are the Mappu Codebase Explainer & System Diagrammer. Analyze relationships and output styled explanations along with precise Mermaid sequences or flowcharts.",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          target: { type: Type.STRING },
-          highLevelOverview: { type: Type.STRING, description: "Conceptual high-level walkthrough explaining what is going on." },
-          architecturalStyle: { type: Type.STRING, description: "e.g., Modular MVC, Client-Server SPA, Event-Driven Middleware" },
-          keyDesignPatterns: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                patternName: { type: Type.STRING },
-                description: { type: Type.STRING },
-                locationInCode: { type: Type.STRING, description: "Which routine or files demonstrate this pattern." }
-              },
-              required: ["patternName", "description", "locationInCode"]
-            }
-          },
-          mermaidFlowchart: { type: Type.STRING, description: "A valid Mermaid.js flowchart or sequence block, starting with 'graph TD' or benzeri. Must use standard string syntax without backticks." }
+  const responseText = await adapter.generate(explainPrompt, "You are the Mappu Codebase Explainer & System Diagrammer. Analyze relationships and output styled explanations along with precise Mermaid sequences or flowcharts.", {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string" },
+        highLevelOverview: { type: "string", description: "Conceptual high-level walkthrough explaining what is going on." },
+        architecturalStyle: { type: "string", description: "e.g., Modular MVC, Client-Server SPA, Event-Driven Middleware" },
+        keyDesignPatterns: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              patternName: { type: "string" },
+              description: { type: "string" },
+              locationInCode: { type: "string", description: "Which routine or files demonstrate this pattern." }
+            },
+            required: ["patternName", "description", "locationInCode"]
+          }
         },
-        required: ["target", "highLevelOverview", "architecturalStyle", "keyDesignPatterns", "mermaidFlowchart"]
-      }
+        mermaidFlowchart: { type: "string", description: "A valid Mermaid.js flowchart or sequence block, starting with 'graph TD' or benzeri. Must use standard string syntax without backticks." }
+      },
+      required: ["target", "highLevelOverview", "architecturalStyle", "keyDesignPatterns", "mermaidFlowchart"]
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return JSON.parse(responseText || "{}");
 }
 
 // ----------------------
@@ -730,48 +689,43 @@ export interface FrameworkDiscovery {
 }
 
 export async function discoverFramework(query: string): Promise<FrameworkDiscovery> {
-  const ai = getGeminiClient();
+  const adapter = getLLMAdapter();
   const searchPrompt = `
     Find, structure, and describe an "insane" or cutting-edge developer web framework, micro-framework, database, environment, or tool matching the developer query: "${query}".
     This can be things like Elysia, Hono, Bun, Astro, Tauri, Fastify, SurrealDB, SolidStart, Qwik, SvelteKit, Biome, Kinde, Trigger.dev, E2B, Fresh, etc.
     Explain why it is "insane", outline high-speed statistics, and generate a robust, fully production-grade copy-pasteable boilerplate code script in its matching language (TypeScript/JavaScript/Python/Rust) that can run out-of-the-box.
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
-    contents: searchPrompt,
-    config: {
-      responseMimeType: "application/json",
-      systemInstruction: "You are the Mappu Framework Discovery Engine. Analyze innovative stacks and return pristine, detailed JSON schemas containing boilerplate implementations.",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          name: { type: Type.STRING },
-          tagline: { type: Type.STRING },
-          description: { type: Type.STRING },
-          benefits: { type: Type.ARRAY, items: { type: Type.STRING } },
-          installCommand: { type: Type.STRING },
-          performanceScore: { type: Type.INTEGER, description: "Performance indicator score from 0 to 100" },
-          starsEstimate: { type: Type.STRING, description: "GitHub stars rough estimate (e.g., '14k+')" },
-          keyFeatures: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                feature: { type: Type.STRING },
-                description: { type: Type.STRING }
-              },
-              required: ["feature", "description"]
-            }
-          },
-          boilerplateFileName: { type: Type.STRING },
-          boilerplateCode: { type: Type.STRING, description: "Full working self-contained boilerplate file containing excellent production-grade starter code." }
+  const responseText = await adapter.generate(searchPrompt, "You are the Mappu Framework Discovery Engine. Analyze innovative stacks and return pristine, detailed JSON schemas containing boilerplate implementations.", {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        tagline: { type: "string" },
+        description: { type: "string" },
+        benefits: { type: "array", items: { type: "string" } },
+        installCommand: { type: "string" },
+        performanceScore: { type: "integer", description: "Performance indicator score from 0 to 100" },
+        starsEstimate: { type: "string", description: "GitHub stars rough estimate (e.g., '14k+')" },
+        keyFeatures: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              feature: { type: "string" },
+              description: { type: "string" }
+            },
+            required: ["feature", "description"]
+          }
         },
-        required: ["name", "tagline", "description", "benefits", "installCommand", "performanceScore", "starsEstimate", "keyFeatures", "boilerplateFileName", "boilerplateCode"]
-      }
+        boilerplateFileName: { type: "string" },
+        boilerplateCode: { type: "string", description: "Full working self-contained boilerplate file containing excellent production-grade starter code." }
+      },
+      required: ["name", "tagline", "description", "benefits", "installCommand", "performanceScore", "starsEstimate", "keyFeatures", "boilerplateFileName", "boilerplateCode"]
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return JSON.parse(responseText || "{}");
 }
 

@@ -54,6 +54,6 @@ export function getLLMAdapter(provider?: string, options?: Record<string, any>):
       return new DeepSeekAdapter(finalOptions);
     case "gemini":
     default:
-      return new GeminiAdapter();
+      return new GeminiAdapter(finalOptions);
   }
 }

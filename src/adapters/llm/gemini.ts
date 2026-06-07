@@ -8,9 +8,10 @@ import { GoogleGenAI } from "@google/genai";
 
 export class GeminiAdapter implements MappuLLM {
   private client: GoogleGenAI;
+  private defaultModel: string;
 
-  constructor() {
-    const key = process.env.GEMINI_API_KEY || "dummy";
+  constructor(options?: Record<string, any>) {
+    const key = options?.apiKey || process.env.GEMINI_API_KEY || "dummy";
     this.client = new GoogleGenAI({
       apiKey: key,
       httpOptions: {
@@ -19,13 +20,28 @@ export class GeminiAdapter implements MappuLLM {
         }
       }
     });
+    this.defaultModel = options?.model || "gemini-3.5-flash";
   }
 
   public async generate(prompt: string, system?: string, options?: Record<string, any>): Promise<string> {
+    const config: any = {};
+    if (system) {
+      config.systemInstruction = system;
+    }
+    if (options?.responseMimeType) {
+      config.responseMimeType = options.responseMimeType;
+    }
+    if (options?.responseSchema) {
+      config.responseSchema = options.responseSchema;
+    }
+    if (options?.temperature !== undefined) {
+      config.temperature = options.temperature;
+    }
+
     const response = await this.client.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: options?.model || this.defaultModel,
       contents: prompt,
-      config: system ? { systemInstruction: system } : undefined
+      config: Object.keys(config).length > 0 ? config : undefined
     });
     return response.text || "";
   }
@@ -33,7 +49,7 @@ export class GeminiAdapter implements MappuLLM {
   public async *stream(systemPrompt: string, userMessage: string, system?: string): AsyncIterable<string> {
     const systemInstruction = systemPrompt || system;
     const responseStream = await this.client.models.generateContentStream({
-      model: "gemini-3.5-flash",
+      model: this.defaultModel,
       contents: userMessage,
       config: systemInstruction ? { systemInstruction } : undefined
     });
@@ -62,7 +78,7 @@ export class GeminiAdapter implements MappuLLM {
     }
 
     const responseStream = await this.client.models.generateContentStream({
-      model: "gemini-3.5-flash",
+      model: this.defaultModel,
       contents,
       config: systemInstruction ? { systemInstruction } : undefined
     });
@@ -103,7 +119,7 @@ export class GeminiAdapter implements MappuLLM {
     });
 
     const response = await this.client.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: this.defaultModel,
       contents,
       config: {
         systemInstruction,

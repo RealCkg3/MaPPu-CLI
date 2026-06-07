@@ -6,7 +6,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
-import { GoogleGenAI } from "@google/genai";
+import { getLLMAdapter } from "../adapters/llm/factory";
 
 export interface SecurityOptions {
   category?: 'sast' | 'ai' | 'iac' | 'secrets' | 'deps';
@@ -1145,11 +1145,10 @@ export class SecurityEngine {
       duration: Date.now() - startTime
     };
 
-    // Integrate live AI explanation review if requested and API key is present
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (options.ai && apiKey && findings.length > 0) {
+    // Integrate live AI explanation review if requested
+    if (options.ai && findings.length > 0) {
       try {
-        await this.enrichFindingsWithAI(report, apiKey);
+        await this.enrichFindingsWithAI(report);
       } catch {
         // Safe graceful fallbacks
       }
@@ -1289,24 +1288,18 @@ export class SecurityEngine {
     `;
   }
 
-  private async enrichFindingsWithAI(report: SecurityReport, apiKey: string): Promise<void> {
-    const ai = new GoogleGenAI({ apiKey });
+  private async enrichFindingsWithAI(report: SecurityReport): Promise<void> {
+    const adapter = getLLMAdapter();
     const prompt = `
       Review these physical static security findings list. Supply professional detailed analysis.
       ${JSON.stringify(report.findings.slice(0, 10), null, 2)}
     `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: "You are the Mappu Cybersecurity Architect. Synthesize threat logs and output remediation recommendations."
-      }
-    });
+    const response = await adapter.generate(prompt, "You are the Mappu Cybersecurity Architect. Synthesize threat logs and output remediation recommendations.");
 
-    if (response.text) {
+    if (response) {
       report.findings.forEach(f => {
-        if (response.text!.includes(f.rule)) {
+        if (response.includes(f.rule)) {
           f.message += ` (AI Extended: Professional auditing advises careful isolation of similar vectors).`;
         }
       });

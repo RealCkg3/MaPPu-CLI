@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GoogleGenAI } from "@google/genai";
 import { getStoredIndex, TraceFlow, TraceStep, FileChunk } from "../mappu-core";
+import { getLLMAdapter } from "../adapters/llm/factory";
 import { CallGraphBuilder } from "../graph/call-graph";
 import Database from "better-sqlite3";
 import * as path from "path";
@@ -193,11 +193,10 @@ export class TraceEngine {
       steps
     };
 
-    // If AI explanation requested and key present, run Gemini refinement
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (options.ai && apiKey && steps.length > 0) {
+    // If AI explanation requested, run multimodel refinement
+    if (options.ai && steps.length > 0) {
       try {
-        const enriched = await this.enrichTraceWithAI(flow, apiKey);
+        const enriched = await this.enrichTraceWithAI(flow);
         return enriched;
       } catch {
         // Fall back gracefully
@@ -207,8 +206,8 @@ export class TraceEngine {
     return flow;
   }
 
-  private async enrichTraceWithAI(flow: TraceFlow, apiKey: string): Promise<TraceFlow> {
-    const ai = new GoogleGenAI({ apiKey });
+  private async enrichTraceWithAI(flow: TraceFlow): Promise<TraceFlow> {
+    const adapter = getLLMAdapter();
     const prompt = `
       Review this static trace flow steps and return an enriched sequence walkthrough.
       Flow target: ${flow.intent}
@@ -216,15 +215,10 @@ export class TraceEngine {
       ${JSON.stringify(flow.steps, null, 2)}
     `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        systemInstruction: "You are the Mappu Call Trace Enhancer. Return beautiful, enriched chronological description steps.",
-      }
+    const responseText = await adapter.generate(prompt, "You are the Mappu Call Trace Enhancer. Return beautiful, enriched chronological description steps.", {
+      responseMimeType: "application/json"
     });
 
-    return JSON.parse(response.text || JSON.stringify(flow));
+    return JSON.parse(responseText || JSON.stringify(flow));
   }
 }

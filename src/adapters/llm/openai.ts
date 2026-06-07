@@ -23,17 +23,23 @@ export class OpenAIAdapter implements MappuLLM {
     }
     messages.push({ role: "user", content: prompt });
 
+    const body: any = {
+      model: options?.model || this.model,
+      messages,
+      temperature: options?.temperature ?? 0.2
+    };
+
+    if (options?.responseMimeType === "application/json") {
+      body.response_format = { type: "json_object" };
+    }
+
     const response = await fetch(`${this.apiBase}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${this.apiKey}`
       },
-      body: JSON.stringify({
-        model: options?.model || this.model,
-        messages,
-        temperature: options?.temperature ?? 0.2
-      })
+      body: JSON.stringify(body)
     });
 
     if (!response.ok) {

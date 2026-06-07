@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GoogleGenAI } from "@google/genai";
 import { getStoredIndex, DoctorReport, DiagnosticsIssue } from "../mappu-core";
+import { getLLMAdapter } from "../adapters/llm/factory";
 import Database from "better-sqlite3";
 import * as path from "path";
 import { ImportGraphBuilder } from "../graph/import-graph";
@@ -157,11 +157,10 @@ export class DoctorEngine {
       issues
     };
 
-    // If AI explanation requested and key is present, enrich the review
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (options.ai && apiKey) {
+    // If AI explanation requested, enrich the review via multimodel flow
+    if (options.ai) {
       try {
-        const enrichedSummary = await this.enrichSummaryWithAI(report, apiKey);
+        const enrichedSummary = await this.enrichSummaryWithAI(report);
         report.summaryReview = enrichedSummary;
       } catch {
         // Safe graceful fallback
@@ -172,8 +171,8 @@ export class DoctorEngine {
     return report;
   }
 
-  private async enrichSummaryWithAI(report: DoctorReport, apiKey: string): Promise<string> {
-    const ai = new GoogleGenAI({ apiKey });
+  private async enrichSummaryWithAI(report: DoctorReport): Promise<string> {
+    const adapter = getLLMAdapter();
     const prompt = `
       Review this static doctor report and generate a 2-paragraph professional architectural overview review.
       Score: ${report.overallScore}/100
@@ -181,14 +180,8 @@ export class DoctorEngine {
       ${report.issues.map(i => `- [${i.severity.toUpperCase()}] ${i.title}: ${i.description}`).join("\n")}
     `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: "You are the Mappu Doctor Consulting Assistant. Provide high-level recommendations.",
-      }
-    });
+    const response = await adapter.generate(prompt, "You are the Mappu Doctor Consulting Assistant. Provide high-level recommendations.");
 
-    return response.text || report.summaryReview;
+    return response || report.summaryReview;
   }
 }

@@ -21,19 +21,25 @@ export class OllamaAdapter implements MappuLLM {
     }
     messages.push({ role: "user", content: prompt });
 
+    const body: any = {
+      model: options?.model || this.model,
+      messages,
+      stream: false,
+      options: {
+        temperature: options?.temperature ?? 0.2
+      }
+    };
+
+    if (options?.responseMimeType === "application/json") {
+      body.format = "json";
+    }
+
     const response = await fetch(`${this.apiBase}/api/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        model: options?.model || this.model,
-        messages,
-        stream: false,
-        options: {
-          temperature: options?.temperature ?? 0.2
-        }
-      })
+      body: JSON.stringify(body)
     });
 
     if (!response.ok) {

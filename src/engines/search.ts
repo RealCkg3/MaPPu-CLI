@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GoogleGenAI } from "@google/genai";
 import { getStoredIndex, SearchResult } from "../mappu-core";
+import { getLLMAdapter } from "../adapters/llm/factory";
 import BM25 from "okapibm25";
 import * as path from "path";
 import * as fs from "fs";
@@ -111,11 +111,10 @@ export class SearchEngine {
     // Sort by score descending and limit before AI enrichment
     finalResults = finalResults.sort((a, b) => b.score - a.score);
 
-    // If AI is configured and requested via options, enrich the top results using Gemini
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (options.ai && apiKey && finalResults.length > 0) {
+    // If AI mode requested, enrich the top results via multimodel flow
+    if (options.ai && finalResults.length > 0) {
       try {
-        finalResults = await this.enrichWithAI(finalResults.slice(0, 5), cleanQuery, apiKey);
+        finalResults = await this.enrichWithAI(finalResults.slice(0, 5), cleanQuery);
       } catch {
         // Fall back gracefully if AI fails or rate limits
       }
@@ -401,10 +400,10 @@ export class SearchEngine {
   }
 
   /**
-   * Gemini enhancement overlay wrapper
+   * AI enrichment overlay wrapper
    */
-  private async enrichWithAI(results: SearchResult[], query: string, apiKey: string): Promise<SearchResult[]> {
-    const ai = new GoogleGenAI({ apiKey });
+  private async enrichWithAI(results: SearchResult[], query: string): Promise<SearchResult[]> {
+    const adapter = getLLMAdapter();
     const prompt = `
       Given the developer intent query: "${query}"
       Review these top matching code boundaries and enrich their 'matchRationale' with high-level architectural explanations.
@@ -412,28 +411,23 @@ export class SearchEngine {
       ${results.map((r, i) => `[ID: ${i}] File: ${r.filePath} (Lines ${r.startLine}-${r.endLine})\nSnippet:\n${r.snippet.substring(0, 200)}...\n`).join("\n")}
     `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        systemInstruction: "You are the Mappu Search Enhancer. Enrich matching files search results with professional explanations.",
-        responseSchema: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              index: { type: "integer" },
-              matchRationale: { type: "string" },
-              score: { type: "integer" }
-            },
-            required: ["index", "matchRationale", "score"]
-          }
+    const response = await adapter.generate(prompt, "You are the Mappu Search Enhancer. Enrich matching files search results with professional explanations.", {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            index: { type: "integer" },
+            matchRationale: { type: "string" },
+            score: { type: "integer" }
+          },
+          required: ["index", "matchRationale", "score"]
         }
       }
     });
 
-    const enrichments: any[] = JSON.parse(response.text || "[]");
+    const enrichments: any[] = JSON.parse(response || "[]");
     enrichments.forEach(e => {
       const target = results[e.index];
       if (target) {
