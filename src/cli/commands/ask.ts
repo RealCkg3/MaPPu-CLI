@@ -5,9 +5,18 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { GoogleGenAI, Type } from "@google/genai";
 import { BM25SearchEngine } from "../../index/bm25";
+import { getLLMAdapter } from "../../adapters/llm/factory";
 import { colors } from "../display/colors";
+
+enum Type {
+  STRING = "STRING",
+  NUMBER = "NUMBER",
+  INTEGER = "INTEGER",
+  BOOLEAN = "BOOLEAN",
+  ARRAY = "ARRAY",
+  OBJECT = "OBJECT"
+}
 
 // Estimate tokens simply (1 token ~4 characters)
 function estimateTokens(text: string): number {
@@ -116,6 +125,8 @@ export async function executeAsk(query: string): Promise<void> {
   // Load config
   const config = loadConfig();
   const contextTokenLimit = config["ai.contextTokenLimit"] || config.ai?.contextTokenLimit || 16000;
+  const provider = config["ai.provider"] || config.ai?.provider || "gemini";
+  const model = config["ai.model"] || config.ai?.model;
 
   // Search BM25 for top 15 results
   const bm25Engine = new BM25SearchEngine(projectRoot);
@@ -200,30 +211,20 @@ Question: ${query}`;
     }
   ];
 
-  // Initialize Gemini API
-  const key = process.env.GEMINI_API_KEY || "dummy";
-  const ai = new GoogleGenAI({
-    apiKey: key,
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      }
-    }
-  });
+  // Initialize unified Mappu adapter dynamically
+  const adapter = getLLMAdapter(provider, { model });
 
   let turns = 0;
   const MAX_TURNS = 10;
 
   while (turns < MAX_TURNS) {
     try {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: currentMessages,
-        config: {
-          systemInstruction: systemPrompt,
-          tools: [{ functionDeclarations: tools }]
-        }
-      });
+      if (!adapter.completeWithTools) {
+        // If the initialized adapter doesn't support tools, break out to standard generation
+        break;
+      }
+
+      const response = await adapter.completeWithTools(currentMessages, tools, systemPrompt);
 
       const calls = response.functionCalls;
       if (!calls || calls.length === 0) {
@@ -234,8 +235,20 @@ Question: ${query}`;
       // Sync model response containing tool calls to messages
       const modelContent = response.candidates?.[0]?.content;
       if (modelContent) {
-        modelContent.role = "model";
         currentMessages.push(modelContent);
+      } else {
+        currentMessages.push({
+          role: "model",
+          parts: [
+            { text: response.text || "" },
+            ...calls.map((c: any) => ({
+              functionCall: {
+                name: c.name,
+                args: c.args
+              }
+            }))
+          ]
+        });
       }
 
       // Execute tool calls
@@ -279,31 +292,25 @@ Question: ${query}`;
   // Stream output final response to terminal
   console.log(`\n${colors.bold}${colors.indigo}◆ Mappu Copilot Response:${colors.reset}\n`);
   try {
-    const stream = await ai.models.generateContentStream({
-      model: "gemini-3.5-flash",
-      contents: currentMessages,
-      config: {
-        systemInstruction: systemPrompt
-      }
-    });
+    if (adapter.streamChat) {
+      const stream = adapter.streamChat(currentMessages, systemPrompt);
 
-    for await (const chunk of stream) {
-      if (chunk.text) {
-        process.stdout.write(chunk.text);
+      for await (const chunk of stream) {
+        process.stdout.write(chunk);
       }
+      console.log("\n");
+    } else {
+      const text = currentMessages[currentMessages.length - 1]?.parts?.[0]?.text || query;
+      const res = await adapter.generate(text, systemPrompt);
+      console.log(res);
+      console.log("\n");
     }
-    console.log("\n");
   } catch (err: any) {
     console.error(`\n${colors.red}Streaming final response failed, falling back...${colors.reset}`);
     try {
-      const finalRes = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: currentMessages,
-        config: {
-          systemInstruction: systemPrompt
-        }
-      });
-      console.log(finalRes.text || "No response text.");
+      const text = currentMessages[currentMessages.length - 1]?.parts?.[0]?.text || query;
+      const finalRes = await adapter.generate(text, systemPrompt);
+      console.log(finalRes || "No response text.");
     } catch (fallbackErr: any) {
       console.error(`Fallback failed: ${fallbackErr.message}`);
     }

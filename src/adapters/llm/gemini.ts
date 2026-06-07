@@ -45,6 +45,35 @@ export class GeminiAdapter implements MappuLLM {
     }
   }
 
+  public async *streamChat(messages: any[], system?: string): AsyncIterable<string> {
+    const systemInstruction = system;
+    const contents: any[] = [];
+
+    for (const m of messages) {
+      if (m.parts && Array.isArray(m.parts)) {
+        contents.push(m);
+      } else {
+        const role = m.role === "assistant" ? "model" : m.role;
+        contents.push({
+          role,
+          parts: [{ text: m.content || m.text || "" }]
+        });
+      }
+    }
+
+    const responseStream = await this.client.models.generateContentStream({
+      model: "gemini-3.5-flash",
+      contents,
+      config: systemInstruction ? { systemInstruction } : undefined
+    });
+
+    for await (const chunk of responseStream) {
+      if (chunk.text) {
+        yield chunk.text;
+      }
+    }
+  }
+
   public async completeWithTools(messages: any[], tools: any[], system?: string): Promise<any> {
     let systemInstruction = system;
     const contents: any[] = [];

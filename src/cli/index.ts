@@ -22,6 +22,7 @@ import { TestGapEngine } from "../engines/test-gap";
 import { DiffEngine } from "../engines/diff";
 import { StatsEngine } from "../engines/stats";
 import { executeAsk } from "./commands/ask";
+import { executeChat } from "./commands/chat";
 import {
   getStoredIndex,
   indexCodebase,
@@ -253,6 +254,16 @@ ${colors.green}${colors.bold}✔ Mappu Database Constructed Successfully!${color
         await executeAsk(rawQuestion);
       } catch (err: any) {
         console.error(`Ask error: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "chat": {
+      try {
+        await executeChat();
+      } catch (err: any) {
+        console.error(`Chat REPL error: ${err.message}`);
         process.exit(1);
       }
       break;
